@@ -1,0 +1,122 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: Optional release tag; must match Directory.Build.props.
+        required: false
+        type: string
+        default: ''
+    outputs:
+      version:
+        description: Four-part plugin version.
+        value: ${{ jobs.metadata.outputs.version }}
+      minimum-jellyfin:
+        description: Oldest supported Jellyfin version and release package target.
+        value: ${{ jobs.metadata.outputs.minimum-jellyfin }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      matrix: ${{ steps.release.outputs.matrix }}
+      minimum-jellyfin: ${{ steps.release.outputs.minimum-jellyfin }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release-tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Validate release metadata
+        id: release
+        env:
+          EXPECTED_TAG: ${{ inputs.release-tag }}
+        run: node scripts/release-info.mjs --github-output >> "$GITHUB_OUTPUT"
+
+  unit:
+    needs: metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release-tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test JavaScript runtime and release tooling
+        run: npm test
+      - name: Test transformations
+        run: dotnet run --project tests/Transformations
+      - name: Test web asset registration
+        run: dotnet run --project tests/RegistrationScanner
+
+  compatibility:
+    name: Jellyfin ${{ matrix.jellyfin }} compatibility and package
+    needs: [metadata, unit]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.metadata.outputs.matrix) }}
+    env:
+      JELLYFIN_VERSION: ${{ matrix.jellyfin }}
+      FIXTURE_DIR: .research/fixtures/${{ matrix.jellyfin }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release-tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Cache pinned upstream web fixtures
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.FIXTURE_DIR }}
+          key: jellyfin-web-${{ matrix.jellyfin }}-${{ hashFiles('release/config.json', 'scripts/fetch-web-fixtures.sh') }}
+      - name: Fetch or validate pinned upstream web fixtures
+        run: bash scripts/fetch-web-fixtures.sh "$JELLYFIN_VERSION" "$FIXTURE_DIR"
+      - name: Verify native web asset fingerprints
+        run: node scripts/verify-web.mjs "$FIXTURE_DIR"
+      - name: Transform native web assets
+        run: dotnet run --project tests/Transformations -- "$FIXTURE_DIR"/*.chunk.js
+      - name: Verify transformed JavaScript syntax
+        run: node scripts/verify-web.mjs --syntax "$FIXTURE_DIR"/*.patched.js
+      - name: Exercise native query and toolbar integration
+        run: node scripts/verify-native-bridge.mjs "$FIXTURE_DIR"
+      - name: Build package
+        run: node scripts/package.mjs "$JELLYFIN_VERSION"
+      - name: Upload tested package
+        uses: actions/upload-artifact@v4
+        with:
+          name: infinite-scroll-jellyfin-${{ matrix.jellyfin }}
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Infinite Scroll</title>
+</head>
+<body>
+    <div id="InfiniteScrollConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+         data-require="emby-input,emby-button,emby-checkbox">
+        <div data-role="content">
+            <div class="content-primary">
+                <form id="InfiniteScrollConfigForm">
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="InfiniteScrollEnabled" type="checkbox" is="emby-checkbox">
+                            <span>Enable infinite scroll</span>
+                        </label>
+                        <div class="fieldDescription">Load more library items automatically as you approach the end of the list.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="InfiniteScrollBatchSize">Items to load at a time</label>
+                        <input id="InfiniteScrollBatchSize" type="number" is="emby-input" min="1" max="1000" step="1" required>
+                        <div class="fieldDescription">Default: 100. Smaller batches reduce each request; larger batches load more items together. Allowed range: 1–1000.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="InfiniteScrollCompletionMessage">All items loaded message</label>
+                        <input id="InfiniteScrollCompletionMessage" type="text" is="emby-input">
+                        <div class="fieldDescription">Shown when all library items have loaded. Default: All items loaded. Leave blank to hide the message.</div>
+                    </div>
+                    <p>These settings apply to all users of the server-hosted Jellyfin web client. Reload open Jellyfin tabs after saving changes.</p>
+                    <div id="InfiniteScrollConfigError" role="alert" style="color:var(--theme-error-color,#f44336);display:none"></div>
+                    <button is="emby-button" type="submit" class="raised button-submit block">
+                        <span>Save</span>
+                    </button>
+                </form>
+            </div>
+        </div>
+        <script>
+            (function () {
+                'use strict';
+                var pluginId = 'b8407ec8-9945-4fd4-baa7-47f349ed945a';
+                var page = document.querySelector('#InfiniteScrollConfigPage');
+                var form = page.querySelector('#InfiniteScrollConfigForm');
+                var error = page.querySelector('#InfiniteScrollConfigError');
+
+                function reportError(message) {
+                    error.textContent = message;
+                    error.style.display = '';
+                    Dashboard.hideLoadingMsg();
+                }
+
+                page.addEventListener('pageshow', function () {
+                    error.style.display = 'none';
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        page.querySelector('#InfiniteScrollEnabled').checked = config.Enabled;
+                        page.querySelector('#InfiniteScrollBatchSize').value = config.BatchSize;
+                        page.querySelector('#InfiniteScrollCompletionMessage').value =
+                            typeof config.CompletionMessage === 'string' ? config.CompletionMessage : 'All items loaded.';
+                        Dashboard.hideLoadingMsg();
+                    }).catch(function () {
+                        reportError('Could not load the configuration. Reload this page to try again.');
+                    });
+                });
+
+                form.addEventListener('submit', function (event) {
+                    event.preventDefault();
+                    error.style.display = 'none';
+                    var batchSize = Number(page.querySelector('#InfiniteScrollBatchSize').value);
+                    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 1000) {
+                        reportError('Enter a whole number between 1 and 1000.');
+                        return;
+                    }
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        config.Enabled = page.querySelector('#InfiniteScrollEnabled').checked;
+                        config.BatchSize = batchSize;
+                        config.CompletionMessage = page.querySelector('#InfiniteScrollCompletionMessage').value;
+                        return ApiClient.updatePluginConfiguration(pluginId, config);
+                    }).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                    }).catch(function () {
+                        reportError('Could not save the configuration. Try again.');
+                    });
+                });
+            }());
+        </script>
+    </div>
+</body>
+</html>

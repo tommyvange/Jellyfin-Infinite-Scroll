@@ -1,0 +1,40 @@
+{
+  "guid": "b8407ec8-9945-4fd4-baa7-47f349ed945a",
+  "name": "Infinite Scroll",
+  "assemblyName": "Jellyfin.Plugin.InfiniteScroll",
+  "owner": "tommyvange",
+  "category": "General",
+  "overview": "Load more library items as you scroll.",
+  "description": "Infinite scrolling and configurable lazy loading for server-hosted Jellyfin web libraries. Requires File Transformation 3.x matching your Jellyfin server version.",
+  "minimumJellyfinVersion": "12.0.0",
+  "testedJellyfinVersions": ["12.0.0", "12.1.0", "12.2.0"],
+  "webFixtures": {
+    "12.0.0": {
+      "release": "12.0",
+      "files": [
+        "8463.5024adce4ba13b0c6c59.chunk.js",
+        "71162.f8bea5ce9b66d58608af.chunk.js",
+        "28524.2c1384b3f06c676628ae.chunk.js",
+        "78701.d06a72f873e03eaaa404.chunk.js"
+      ]
+    },
+    "12.1.0": {
+      "release": "12.1",
+      "files": [
+        "8463.5024adce4ba13b0c6c59.chunk.js",
+        "71162.f8bea5ce9b66d58608af.chunk.js",
+        "28524.2c1384b3f06c676628ae.chunk.js",
+        "78701.d06a72f873e03eaaa404.chunk.js"
+      ]
+    },
+    "12.2.0": {
+      "release": "12.2",
+      "files": [
+        "8463.5024adce4ba13b0c6c59.chunk.js",
+        "71162.f8bea5ce9b66d58608af.chunk.js",
+        "28524.2c1384b3f06c676628ae.chunk.js",
+        "78701.10911a248782664da343.chunk.js"
+      ]
+    }
+  }
+}
