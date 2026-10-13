@@ -14,6 +14,9 @@ const helpers = Promise.all([
     import('../scripts/publish-release.mjs')
 ]).then(([releaseInfo, manifest, publication]) => ({ ...releaseInfo, ...manifest, ...publication }));
 
+const imageBytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jKwoAAAAASUVORK5CYII=', 'base64');
+
 function releaseInfo(version = '1.1.0.0') {
     return {
         version, tag: `v${version}`,
@@ -21,6 +24,7 @@ function releaseInfo(version = '1.1.0.0') {
             guid: 'b8407ec8-9945-4fd4-baa7-47f349ed945a', name: 'Infinite Scroll',
             description: 'Infinite scrolling for Jellyfin libraries.', overview: 'Load library items as you scroll.',
             owner: 'Infinite Scroll contributors', category: 'General',
+            imagePath: 'assets/Jellyfin-Infinite-Scroll.png',
             assemblyName: 'Jellyfin.Plugin.InfiniteScroll', minimumJellyfinVersion: '12.0.0',
             testedJellyfinVersions: ['12.0.0', '12.1.0', '12.2.0'],
             webFixtures: {
@@ -155,6 +159,8 @@ test('catalog uses the stable GUID, minimum ABI, exact release URL, UTC timestam
     assert.equal(manifest.length, 1);
     assert.equal(manifest[0].guid, info.config.guid);
     assert.equal(manifest[0].name, info.config.name);
+    assert.equal(manifest[0].imageUrl,
+        'https://raw.githubusercontent.com/owner/Jellyfin-Infinite-Scroll/v1.1.0.0/assets/Jellyfin-Infinite-Scroll.png');
     assert.deepEqual(manifest[0].versions, [{
         version: '1.1.0.0', changelog: 'Configurable completion message.', targetAbi: '12.0.0.0',
         sourceUrl: `https://github.com/owner/Jellyfin-Infinite-Scroll/releases/download/v1.1.0.0/${packageFileName(info)}`,
@@ -216,7 +222,7 @@ test('package validation checks the metadata needed for repository installs', as
     const info = releaseInfo();
     const metadata = {
         guid: info.config.guid, name: info.config.name, version: info.version, targetAbi: '12.0.0.0',
-        autoUpdate: true, assemblies: [info.config.assemblyName + '.dll']
+        autoUpdate: true, assemblies: [info.config.assemblyName + '.dll'], imagePath: path.basename(info.config.imagePath)
     };
     const zipPath = path.join(directory, 'metadata.zip');
     function packageMetadata(meta) {
@@ -224,14 +230,17 @@ test('package validation checks the metadata needed for repository installs', as
         rmSync(zipPath, { force: true });
         const dllName = info.config.assemblyName + '.dll';
         writeFileSync(path.join(directory, dllName), 'nonempty test DLL bytes');
-        execFileSync('zip', ['-q', zipPath, 'meta.json', dllName], { cwd: directory });
+        const imageName = path.basename(info.config.imagePath);
+        writeFileSync(path.join(directory, imageName), imageBytes);
+        execFileSync('zip', ['-q', zipPath, 'meta.json', dllName, imageName], { cwd: directory });
     }
     packageMetadata(metadata);
     assert.doesNotThrow(() => validatePackage(zipPath, info));
     for (const [property, value] of [
         ['guid', 'different-guid'], ['name', 'Different name'], ['version', '1.0.0.0'],
         ['targetAbi', '12.2.0.0'], ['autoUpdate', false], ['assemblies', ['Unexpected.dll']],
-        ['assemblies', [info.config.assemblyName + '.dll', 'Extra.dll']]
+        ['assemblies', [info.config.assemblyName + '.dll', 'Extra.dll']],
+        ['imagePath', 'Different-image.png'], ['imagePath', info.config.imagePath], ['imagePath', undefined]
     ]) {
         packageMetadata({ ...metadata, [property]: value });
         assert.throws(() => validatePackage(zipPath, info), /ZIP metadata does not match/);
@@ -398,11 +407,13 @@ test('package validation rejects a missing or empty DLL and requires installable
     const directory = temporaryDirectory(t);
     const info = releaseInfo();
     const dllName = info.config.assemblyName + '.dll';
+    const imageName = path.basename(info.config.imagePath);
     const metadata = JSON.stringify({
         guid: info.config.guid, name: info.config.name, version: info.version, targetAbi: '12.0.0.0',
-        autoUpdate: true, assemblies: [dllName]
+        autoUpdate: true, assemblies: [dllName], imagePath: path.basename(info.config.imagePath)
     });
     writeFileSync(path.join(directory, 'meta.json'), metadata);
+    writeFileSync(path.join(directory, imageName), imageBytes);
     writeFileSync(path.join(directory, dllName), '');
     mkdirSync(path.join(directory, 'nested'));
     writeFileSync(path.join(directory, 'nested', dllName), 'nonempty nested DLL');
@@ -413,8 +424,30 @@ test('package validation rejects a missing or empty DLL and requires installable
         [dllName], [dllName, 'nested/meta.json']
     ]) {
         rmSync(zipPath, { force: true });
-        execFileSync('zip', ['-q', zipPath, ...entries], { cwd: directory });
+        execFileSync('zip', ['-q', zipPath, ...entries, imageName], { cwd: directory });
         assert.throws(() => validatePackage(zipPath, info), /one nonempty plugin DLL and one meta.json at its root/);
+    }
+});
+
+test('package validation rejects a missing, empty, or nested plugin image', async t => {
+    const { validatePackage } = await helpers;
+    const directory = temporaryDirectory(t);
+    const info = releaseInfo();
+    const dllName = info.config.assemblyName + '.dll';
+    const imageName = path.basename(info.config.imagePath);
+    writeFileSync(path.join(directory, 'meta.json'), JSON.stringify({
+        guid: info.config.guid, name: info.config.name, version: info.version, targetAbi: '12.0.0.0',
+        autoUpdate: true, assemblies: [dllName], imagePath: imageName
+    }));
+    writeFileSync(path.join(directory, dllName), 'nonempty test DLL bytes');
+    writeFileSync(path.join(directory, imageName), Buffer.alloc(0));
+    mkdirSync(path.join(directory, 'nested'));
+    writeFileSync(path.join(directory, 'nested', imageName), imageBytes);
+    const zipPath = path.join(directory, 'invalid-image.zip');
+    for (const imageEntries of [[], [imageName], ['nested/' + imageName]]) {
+        rmSync(zipPath, { force: true });
+        execFileSync('zip', ['-q', zipPath, 'meta.json', dllName, ...imageEntries], { cwd: directory });
+        assert.throws(() => validatePackage(zipPath, info), /one nonempty plugin image at its root/);
     }
 });
 

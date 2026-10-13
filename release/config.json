@@ -2,6 +2,7 @@
   "guid": "b8407ec8-9945-4fd4-baa7-47f349ed945a",
   "name": "Infinite Scroll",
   "assemblyName": "Jellyfin.Plugin.InfiniteScroll",
+  "imagePath": "assets/Jellyfin-Infinite-Scroll.png",
   "owner": "tommyvange",
   "category": "General",
   "overview": "Load more library items as you scroll.",

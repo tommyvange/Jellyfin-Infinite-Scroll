@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -13,6 +13,7 @@ export function createCatalog({ info, repository, tag, zipBytes, timestamp, chan
     return [{
         guid: config.guid, name: config.name, description: config.description,
         overview: config.overview, owner: config.owner, category: config.category,
+        imageUrl: `https://raw.githubusercontent.com/${repository}/${tag}/${config.imagePath}`,
         versions: [{
             version, changelog, targetAbi: `${config.minimumJellyfinVersion}.0`,
             sourceUrl: `https://github.com/${repository}/releases/download/${tag}/${packageFileName(info)}`,
@@ -51,14 +52,19 @@ export function mergeCatalog(previous, next) {
 export function validatePackage(zipPath, info) {
     const entries = execFileSync('unzip', ['-Z1', zipPath], { encoding: 'utf8' }).trim().split('\n');
     const dllName = `${info.config.assemblyName}.dll`;
+    const imageName = basename(info.config.imagePath);
     if (entries.filter(entry => entry === 'meta.json').length !== 1 ||
         entries.filter(entry => entry === dllName).length !== 1 ||
         !execFileSync('unzip', ['-p', zipPath, dllName], { maxBuffer: 32 * 1024 * 1024 }).length) {
         throw new Error('Release ZIP must contain one nonempty plugin DLL and one meta.json at its root.');
     }
+    if (entries.filter(entry => entry === imageName).length !== 1 ||
+        !execFileSync('unzip', ['-p', zipPath, imageName], { maxBuffer: 32 * 1024 * 1024 }).length) {
+        throw new Error('Release ZIP must contain one nonempty plugin image at its root.');
+    }
     const meta = JSON.parse(execFileSync('unzip', ['-p', zipPath, 'meta.json'], { encoding: 'utf8' }));
     if (meta.guid !== info.config.guid || meta.name !== info.config.name || meta.version !== info.version ||
-        meta.targetAbi !== `${info.config.minimumJellyfinVersion}.0` || meta.autoUpdate !== true ||
+        meta.targetAbi !== `${info.config.minimumJellyfinVersion}.0` || meta.autoUpdate !== true || meta.imagePath !== imageName ||
         !Array.isArray(meta.assemblies) || meta.assemblies.length !== 1 || meta.assemblies[0] !== dllName) {
         throw new Error('ZIP metadata does not match the catalog release configuration.');
     }

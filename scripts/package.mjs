@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs';
-import { resolve, dirname, join } from 'node:path';
+import { resolve, dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -20,11 +20,13 @@ run(dotnet, ['build', 'src/Jellyfin.Plugin.InfiniteScroll', '-c', 'Release', `-p
 const output = join(root, 'artifacts', packageName);
 mkdirSync(output, { recursive: true });
 const dllName = `${config.assemblyName}.dll`;
+const imageName = basename(config.imagePath);
 copyFileSync(join(root, 'src/Jellyfin.Plugin.InfiniteScroll/bin/Release/net10.0', dllName), join(output, dllName));
+copyFileSync(join(root, config.imagePath), join(output, imageName));
 const manifest = {
     category: config.category, changelog: readFileSync(join(root, 'release/notes.md'), 'utf8').trim(),
     description: config.description, guid: config.guid, name: config.name,
-    overview: config.overview, owner: config.owner,
+    overview: config.overview, owner: config.owner, imagePath: imageName,
     targetAbi: `${jellyfinVersion}.0`, version, status: 'Active', autoUpdate: true,
     assemblies: [dllName]
 };
@@ -35,7 +37,7 @@ if (existsSync(zipPath)) {
     const { unlinkSync } = await import('node:fs');
     unlinkSync(zipPath);
 }
-run('zip', ['-q', '-X', zipPath, dllName, 'meta.json'], output);
+run('zip', ['-q', '-X', zipPath, dllName, 'meta.json', imageName], output);
 const sha256 = createHash('sha256').update(readFileSync(zipPath)).digest('hex');
 writeFileSync(zipPath + '.sha256', `${sha256}  ${packageName}.zip\n`);
 console.log(`Packaged ${zipPath}`);

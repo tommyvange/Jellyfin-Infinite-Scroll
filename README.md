@@ -31,7 +31,7 @@ Native Android TV, Swiftfin, and other clients that render their own UI are outs
 3. Install **Infinite Scroll** from the catalog, restart Jellyfin, and hard-refresh the web client. The server log should include `Infinite Scroll registered its web transformations with File Transformation.`
 4. Open **Dashboard → Plugins → Infinite Scroll**, choose the batch size and **All items loaded message**, and save. Reload open Jellyfin tabs after changing the settings. The settings apply to all users of the server-hosted web client.
 
-The catalog URL becomes available after the first tagged release. [GitHub Releases](https://github.com/tommyvange/Jellyfin-Infinite-Scroll/releases) also provides ZIPs for manual installation: stop Jellyfin and extract the DLL and `meta.json` directly into `plugins/Infinite Scroll_<version>/`. For the official Docker image, the plugin directory is normally `/config/plugins/`.
+The catalog URL becomes available after the first tagged release. [GitHub Releases](https://github.com/tommyvange/Jellyfin-Infinite-Scroll/releases) also provides ZIPs for manual installation: stop Jellyfin and extract all ZIP contents (the DLL, `meta.json`, and plugin image) directly into `plugins/Infinite Scroll_<version>/`. For the official Docker image, the plugin directory is normally `/config/plugins/`.
 
 The catalog distributes one package built against the minimum supported Jellyfin ABI, **12.0**; that package is intended for all tested Jellyfin 12 versions. CI additionally compiles and verifies the web integration against 12.0, 12.1, and 12.2. File Transformation itself still needs its matching server-version build.
 

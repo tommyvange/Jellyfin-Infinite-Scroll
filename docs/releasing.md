@@ -34,7 +34,7 @@ The tag must point to a commit on `main`. Version mismatches and prerelease tags
 6. Builds a catalog entry from those published ZIP bytes, including `version`, `targetAbi`, `sourceUrl`, `timestamp`, `changelog`, and Jellyfin's required **MD5** checksum.
 7. Merges the entry with existing history and advances `manifest` with a normal Git commit and push. The catalog never advertises a ZIP before release publication is confirmed.
 
-`meta.json` inside the ZIP describes the installed plugin. The generated repository `manifest.json` lists available releases. They are different documents. ZIPs contain only the plugin DLL and `meta.json`; server assemblies are supplied by Jellyfin.
+`meta.json` inside the ZIP describes the installed plugin. The generated repository `manifest.json` lists available releases. They are different documents. ZIPs contain the plugin DLL, `meta.json`, and the image configured by `imagePath` in `release/config.json`; server assemblies are supplied by Jellyfin. The packaged metadata references the local image filename, while the catalog's `imageUrl` points to the source image at the release tag. This displays the artwork in both the installed plugin page and catalog, including manual installations.
 
 ## Why the catalog has one package per plugin version
 

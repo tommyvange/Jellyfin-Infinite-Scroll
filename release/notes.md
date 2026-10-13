@@ -5,6 +5,7 @@ Infinite Scroll for the server-hosted Jellyfin Web client, verified against Jell
 - Support Modern library views and Legacy Movies and Shows.
 - Retry failed batches without discarding existing items or skipping their offset.
 - Customize the completion message, or leave it blank to hide it.
+- Display the plugin artwork in the catalog and installed plugin page.
 
 Install File Transformation 3.x matching your Jellyfin server version before installing Infinite Scroll. Restart Jellyfin and reload the web client after installation.
 
