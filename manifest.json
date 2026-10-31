@@ -6,8 +6,16 @@
     "overview": "Load more library items as you scroll.",
     "owner": "tommyvange",
     "category": "General",
-    "imageUrl": "https://raw.githubusercontent.com/tommyvange/Jellyfin-Infinite-Scroll/v1.1.0.0/assets/Jellyfin-Infinite-Scroll.png",
+    "imageUrl": "https://raw.githubusercontent.com/tommyvange/Jellyfin-Infinite-Scroll/v1.2.0.0/assets/Jellyfin-Infinite-Scroll.png",
     "versions": [
+      {
+        "version": "1.2.0.0",
+        "changelog": "Infinite Scroll for the server-hosted Jellyfin Web client.\n\n- Add infinite scrolling to category/genre result pages opened from both Modern and Legacy layouts, including Movies → Categories → Comedy.\n- Preserve the native genre and parent-library filters, sorting, alphabet picker, cards, and playback actions. Play All, Queue, and Shuffle keep their original requests.\n- Use the configured batch size and completion message on category result pages too, with retry support for failed batches.\n- Customize the loading message in the plugin settings, or leave it blank to hide the loading text.\n- Resume the accumulated category list when returning from item details, including when a batch was in flight during navigation.\n- Check the minimum supported Jellyfin version and the latest stable release automatically, instead of maintaining a growing list of every minor version.\n\nInstall File Transformation 3.x matching your Jellyfin server version before installing Infinite Scroll. Restart Jellyfin and reload the web client after installation.\n\nNative clients and separately hosted web clients are outside this extension's scope. Random sorting retains native pagination because its ordering changes between requests.",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/tommyvange/Jellyfin-Infinite-Scroll/releases/download/v1.2.0.0/Jellyfin.Plugin.InfiniteScroll_1.2.0.0_jellyfin-12.0.0.zip",
+        "checksum": "2c10b6aad7a6e8bf555930b986951986",
+        "timestamp": "2026-10-31T13:12:49.000Z"
+      },
       {
         "version": "1.1.0.0",
         "changelog": "Infinite Scroll for the server-hosted Jellyfin Web client, verified against Jellyfin 12.0, 12.1, and 12.2.\n\n- Load library items as you scroll, in configurable batches of 1–1000 (default 100).\n- Retain Jellyfin's native cards, filters, sorting, selection, and playback actions.\n- Support Modern library views and Legacy Movies and Shows.\n- Retry failed batches without discarding existing items or skipping their offset.\n- Customize the completion message, or leave it blank to hide it.\n- Display the plugin artwork in the catalog and installed plugin page.\n\nInstall File Transformation 3.x matching your Jellyfin server version before installing Infinite Scroll. Restart Jellyfin and reload the web client after installation.\n\nNative clients and separately hosted web clients are outside this extension's scope. Random sorting retains native pagination because its ordering changes between requests.",
