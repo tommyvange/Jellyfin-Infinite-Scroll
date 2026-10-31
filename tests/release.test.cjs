@@ -26,11 +26,11 @@ function releaseInfo(version = '1.1.0.0') {
             owner: 'Infinite Scroll contributors', category: 'General',
             imagePath: 'assets/Jellyfin-Infinite-Scroll.png',
             assemblyName: 'Jellyfin.Plugin.InfiniteScroll', minimumJellyfinVersion: '12.0.0',
-            testedJellyfinVersions: ['12.0.0', '12.1.0', '12.2.0'],
-            webFixtures: {
-                '12.0.0': { files: ['modern-12.0.chunk.js'] },
-                '12.1.0': { files: ['modern-12.1.chunk.js'] },
-                '12.2.0': { files: ['modern-12.2.chunk.js'] }
+            compatibility: {
+                latestReleaseUrl: 'https://api.github.com/repos/jellyfin/jellyfin/releases/latest',
+                webPackageIndex: 'https://repo.jellyfin.org/debian/dists/trixie/main/binary-amd64/Packages',
+                baselineWebPackage: { version: '12.0.0', url: 'https://repo.jellyfin.org/debian/pool/main/j/jellyfin/web.deb',
+                    sha256: '0'.repeat(64), size: 123 }
             }
         }
     };
@@ -123,7 +123,7 @@ test('release metadata derives the exact version and tag from shared build prope
     for (const target of ['11.9.0', '12.0', '12.0.0.0', 'invalid']) assert.throws(() => packageFileName(info, target), /Jellyfin version must be/);
 });
 
-test('release metadata rejects a missing build version and incomplete compatibility targets', async t => {
+test('release metadata rejects a missing build version and invalid baseline/latest policy', async t => {
     const { readReleaseInfo } = await helpers;
     const directory = temporaryDirectory(t);
     const info = releaseInfo();
@@ -131,15 +131,19 @@ test('release metadata rejects a missing build version and incomplete compatibil
     writeFileSync(path.join(directory, 'Directory.Build.props'), '<Project><Version>1.1.0</Version></Project>');
     assert.throws(() => readReleaseInfo(directory), /four-part plugin Version/);
     const invalidConfigs = [
-        { ...info.config, testedJellyfinVersions: [] },
+        { ...info.config, compatibility: undefined },
         { ...info.config, minimumJellyfinVersion: '12.0' },
-        { ...info.config, testedJellyfinVersions: ['12.1.0'] },
-        { ...info.config, testedJellyfinVersions: ['12.0.0', '11.9.0'] },
-        { ...info.config, webFixtures: { ...info.config.webFixtures, '12.2.0': { files: [] } } }
+        { ...info.config, minimumJellyfinVersion: '11.9.0' },
+        ...[
+            { version: '12.1.0' }, { sha256: 'invalid' }, { size: 0 },
+            { url: 'https://example.com/web.deb' }
+        ].map(change => ({ ...info.config, compatibility: { ...info.config.compatibility,
+            baselineWebPackage: { ...info.config.compatibility.baselineWebPackage, ...change } } })),
+        { ...info.config, compatibility: { ...info.config.compatibility, latestReleaseUrl: 'https://example.com/latest' } }
     ];
     for (const config of invalidConfigs) {
         writeReleaseConfig(directory, { ...info, config });
-        assert.throws(() => readReleaseInfo(directory), /minimum Jellyfin version|compatibility target/);
+        assert.throws(() => readReleaseInfo(directory), /minimum Jellyfin version|compatibility policy/);
     }
 });
 

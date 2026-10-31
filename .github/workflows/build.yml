@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    # Recheck production compatibility even when this repository has no changes.
+    - cron: '23 6 * * 1'
   workflow_call:
     inputs:
       release-tag:
@@ -33,7 +36,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.release.outputs.version }}
-      matrix: ${{ steps.release.outputs.matrix }}
+      matrix: ${{ steps.compatibility.outputs.matrix }}
+      latest-jellyfin: ${{ steps.compatibility.outputs.latest-jellyfin }}
       minimum-jellyfin: ${{ steps.release.outputs.minimum-jellyfin }}
     steps:
       - uses: actions/checkout@v6
@@ -49,6 +53,11 @@ jobs:
         env:
           EXPECTED_TAG: ${{ inputs.release-tag }}
         run: node scripts/release-info.mjs --github-output >> "$GITHUB_OUTPUT"
+      - name: Resolve minimum and latest stable Jellyfin
+        id: compatibility
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/compatibility-info.mjs --github-output >> "$GITHUB_OUTPUT"
 
   unit:
     needs: metadata
@@ -73,7 +82,7 @@ jobs:
         run: dotnet run --project tests/RegistrationScanner
 
   compatibility:
-    name: Jellyfin ${{ matrix.jellyfin }} compatibility and package
+    name: Jellyfin ${{ matrix.jellyfin }} (${{ matrix.role }})
     needs: [metadata, unit]
     runs-on: ubuntu-latest
     strategy:
@@ -81,6 +90,7 @@ jobs:
       matrix: ${{ fromJSON(needs.metadata.outputs.matrix) }}
     env:
       JELLYFIN_VERSION: ${{ matrix.jellyfin }}
+      JELLYFIN_WEB_PACKAGE: ${{ toJSON(matrix.webPackage) }}
       FIXTURE_DIR: .research/fixtures/${{ matrix.jellyfin }}
     steps:
       - uses: actions/checkout@v6
@@ -94,12 +104,12 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Cache pinned upstream web fixtures
+      - name: Cache exact production web fixtures
         uses: actions/cache@v5
         with:
           path: ${{ env.FIXTURE_DIR }}
-          key: jellyfin-web-${{ matrix.jellyfin }}-${{ hashFiles('release/config.json', 'scripts/fetch-web-fixtures.sh') }}
-      - name: Fetch or validate pinned upstream web fixtures
+          key: jellyfin-web-${{ matrix.webPackage.sha256 }}-${{ hashFiles('scripts/fetch-web-fixtures.mjs', 'scripts/verify-web.mjs') }}
+      - name: Fetch or validate production web fixtures
         run: bash scripts/fetch-web-fixtures.sh "$JELLYFIN_VERSION" "$FIXTURE_DIR"
       - name: Verify native web asset fingerprints
         run: node scripts/verify-web.mjs "$FIXTURE_DIR"
@@ -109,9 +119,16 @@ jobs:
         run: node scripts/verify-web.mjs --syntax "$FIXTURE_DIR"/*.patched.js
       - name: Exercise native query and toolbar integration
         run: node scripts/verify-native-bridge.mjs "$FIXTURE_DIR"
-      - name: Build package
+      - name: Exercise native category list integration
+        run: node scripts/verify-category-bridge.mjs "$FIXTURE_DIR"
+      - name: Compile against latest stable server API
+        if: ${{ !matrix.publishPackage }}
+        run: dotnet build src/Jellyfin.Plugin.InfiniteScroll -c Release -p:JellyfinVersion="$JELLYFIN_VERSION"
+      - name: Build minimum-ABI catalog package
+        if: ${{ matrix.publishPackage }}
         run: node scripts/package.mjs "$JELLYFIN_VERSION"
       - name: Upload tested package
+        if: ${{ matrix.publishPackage }}
         uses: actions/upload-artifact@v4
         with:
           name: infinite-scroll-jellyfin-${{ matrix.jellyfin }}
@@ -120,3 +137,7 @@ jobs:
             artifacts/*.sha256
           if-no-files-found: error
           retention-days: 14
+      - name: Report tested production release
+        if: always()
+        run: |
+          echo "Jellyfin $JELLYFIN_VERSION (${{ matrix.role }}), production web package SHA-256: ${{ matrix.webPackage.sha256 }}" >> "$GITHUB_STEP_SUMMARY"

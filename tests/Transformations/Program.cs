@@ -31,6 +31,22 @@ Assert(WebAssetPatcher.PatchJavaScript(syntheticPatched) == syntheticPatched, "J
 Assert(WebAssetPatcher.PatchJavaScript(synthetic.Replace("refetchOnWindowFocus:", "changedProperty:", StringComparison.Ordinal)) == synthetic.Replace("refetchOnWindowFocus:", "changedProperty:", StringComparison.Ordinal), "Changed upstream hook must remain intact.");
 Console.WriteLine("PASS: index injection, scanner, structural guards, renamed bindings, limit overrides, and idempotency.");
 
+string listFetch = "nativeFetch(controller,parameters,controller.currentItem,null,paging.StartIndex,paging.Limit)";
+string listSetup = "controller=this;controller.params=parameters,this.itemsContainer=page.querySelector(\".itemsContainer\")";
+string list = "function nativeFetch(){state.queryRecursive=true;return {GenreIds:genre.Id}}function List(page,parameters){var " +
+    listSetup + ";controller.itemsContainer.fetchData=function(){return loading=!0," + listFetch + ".then(function(result){return result})};" +
+    "function play(){return nativeFetch(controller,parameters,controller.currentItem,null,0,300)};view.getQueryPagingHtml({})}";
+string listPatched = WebAssetPatcher.PatchJavaScript(list);
+Assert(listPatched != list, "The shared category list must be recognized with renamed bindings.");
+Assert(listPatched.Contains("legacyList(function(infiniteScrollQuery){return nativeFetch(controller,parameters,controller.currentItem,null,infiniteScrollQuery.StartIndex,infiniteScrollQuery.Limit)},controller,paging,page)", StringComparison.Ordinal), "Only display pagination must be adapted through the native list request.");
+Assert(listPatched.Contains("function play(){return nativeFetch(controller,parameters,controller.currentItem,null,0,300)}", StringComparison.Ordinal), "Playback requests must remain unchanged.");
+Assert(WebAssetPatcher.PatchJavaScript(listPatched) == listPatched, "List patches must be idempotent.");
+string changedList = list.Replace(".currentItem,null,", ".changedItem,null,", StringComparison.Ordinal);
+Assert(WebAssetPatcher.PatchJavaScript(changedList) == changedList, "An unsupported list request must remain intact.");
+string ambiguousList = list + list;
+Assert(WebAssetPatcher.PatchJavaScript(ambiguousList) == ambiguousList, "Ambiguous list requests must remain intact.");
+Console.WriteLine("PASS: category list scope, native request preservation, renamed bindings, structural guards, and idempotency.");
+
 // Optional real fixtures can be supplied locally, without redistributing the
 // complete upstream bundles. Patched output is used for Node syntax validation.
 foreach (string path in args)

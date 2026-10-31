@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing four-part version tag to release or retry, e.g. v1.1.0.0.
+        description: Existing four-part version tag to release or retry, e.g. v1.2.0.0.
         required: true
         type: string
 
@@ -31,7 +31,7 @@ jobs:
           REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           if [[ ! "$REQUESTED_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo 'Expected a tag such as v1.1.0.0.' >&2
+            echo 'Expected a tag such as v1.2.0.0.' >&2
             exit 1
           fi
           echo "name=$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
@@ -43,7 +43,7 @@ jobs:
       - name: Check tag is on main
         run: git merge-base --is-ancestor HEAD origin/main
 
-  # Reusable workflow runs from the same tag/commit as this release workflow.
+  # The reusable workflow checks out the selected release tag for verification.
   verify:
     needs: tag
     uses: ./.github/workflows/build.yml

@@ -34,6 +34,14 @@ try
     IReadOnlyList<WebAssetRegistration> afterRewrite = WebAssetScanner.Discover(webRoot, pluginId);
     Assert(beforeRewrite.Count == 2 && afterRewrite.Count == 1, "Only currently compatible assets should be registered.");
 
+    string categoryPath = Path.Combine(webRoot, "list.abcd.chunk.js");
+    File.WriteAllText(categoryPath,
+        "function nativeFetch(){state.queryRecursive=true;return {GenreIds:genre.Id,IncludeItemTypes:'Movie'}}" +
+        "function List(page,parameters){var controller=this;controller.params=parameters,this.itemsContainer=page.querySelector(\".itemsContainer\");" +
+        "controller.itemsContainer.fetchData=function(){return loading=!0,nativeFetch(controller,parameters,controller.currentItem,null,paging.StartIndex,paging.Limit).then(function(result){return result})};view.getQueryPagingHtml({})}");
+    Assert(WebAssetScanner.Discover(webRoot, pluginId).Any(asset => asset.RelativePath == "list.abcd.chunk.js"), "The shared category controller must receive its own exact-file transformation.");
+    File.Delete(categoryPath);
+
     string largePath = Path.Combine(webRoot, "500.abcd.chunk.js");
     using (var large = File.Create(largePath)) large.SetLength(WebAssetScanner.MaximumAssetBytes + 1);
     var failures = new List<string>();

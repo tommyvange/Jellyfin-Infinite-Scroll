@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import vm from 'node:vm';
-import { locateModernToolbar, matchingDelimiter } from './verify-web.mjs';
+import { identifyWebAsset, locateModernToolbar, matchingDelimiter } from './verify-web.mjs';
 
 const fixtureDirectory = process.argv[2] ?? '.research/production';
 const runtimePath = 'src/Jellyfin.Plugin.InfiniteScroll/Web/infinite-scroll.js';
@@ -196,26 +196,33 @@ function exerciseToolbar(original, patched, queryState, expectedDisabled) {
         setViewSettings() {}
     };
     const render = (type, props) => ({ type, props });
-    Object.assign(context, {
-        vn: { tF: () => library }, Ee: { D: libraryTabs }, Xn: { Rj: () => library.viewSettings },
-        u: { A: () => true }, Te: { H: () => ({ data: {} }) },
-        p: { gf: () => ({ user: { Id: 'user-1', Policy: {} } }) },
-        a: { useMemo: fn => fn() }, Le: { Q: () => ({ libraryPageSize: 19 }) },
-        O: { Ay: { translate: (key, ...args) => `${key}:${args.join(',')}` } },
-        l: { jsx: render, jsxs: render, Fragment: 'Fragment' },
-        Re: { A: 'Toolbar' }, Qn: [], tn: 'LibraryViewMenu', o: { A: 'Box' },
-        Ne: { A: 'Chip' }, y: { A: 'Stack' }, Fe: { A: 'ButtonGroup' }, dn: 'Pagination'
-    });
-    // The 12.2 toolbar gained filter-reset controls, which changed some import
-    // aliases. Derive those aliases from their native call/prop fingerprints.
+    // Derive minified bindings from native calls and component props. Upstream
+    // webpack IDs, import aliases and chunk hashes are free to change.
     for (const [pattern, value] of [
-        [/:(\w+)\.D\.Movies/, { D: libraryTabs }],
-        [/\(0,(\w+)\.H\)\([^)]*\)\.data/, { H: () => ({ data: {} }) }],
-        [/\(0,(\w+)\.Q\)\(\)\.libraryPageSize/, { Q: () => ({ libraryPageSize: 19 }) }],
+        [/\(0,([\w$]+)\.([\w$]+)\)\(\),[\w$]+=[\w$]+\.id,/, () => library],
+        [/null!=[\w$]+\?[\w$]+:\(0,([\w$]+)\.([\w$]+)\)\(/, () => library.viewSettings],
+        [/:([\w$]+)\.([\w$]+)\.Movies/, libraryTabs],
+        [/\(0,([\w$]+)\.([\w$]+)\)\(\(function\([\w$]+\)\{return [\w$]+\.breakpoints\.up\("sm"\)/, () => true],
+        [/\(0,([\w$]+)\.([\w$]+)\)\([^)]*\)\.data/, () => ({ data: {} })],
+        [/\(0,([\w$]+)\.([\w$]+)\)\(\)\.user/, () => ({ user: { Id: 'user-1', Policy: {} } })],
+        [/([\w$]+)\.(useMemo)\)\(/, fn => fn()],
+        [/\(0,([\w$]+)\.([\w$]+)\)\(\)\.libraryPageSize/, () => ({ libraryPageSize: 19 })],
+        [/([\w$]+)\.([\w$]+)\.translate\("ListPaging"/, { translate: (key, ...args) => `${key}:${args.join(',')}` }],
+        [/\(0,[\w$]+\.jsxs\)\(([\w$]+)\.([\w$]+),\{variant:"dense"/, 'Toolbar'],
+        [/\(0,[\w$]+\.jsx\)\(([\w$]+)\.([\w$]+),\{label:/, 'Chip'],
+        [/\(0,[\w$]+\.jsxs\)\(([\w$]+)\.([\w$]+),\{sx:\{display:"flex"/, 'Box'],
+        [/\(0,[\w$]+\.jsxs\)\(([\w$]+)\.([\w$]+),\{direction:"row"/, 'Stack'],
+        [/\(0,[\w$]+\.jsxs\)\(([\w$]+)\.([\w$]+),\{variant:"contained"/, 'ButtonGroup']
+    ]) {
+        const binding = component.match(pattern);
+        assert.ok(binding, `Missing native toolbar binding: ${pattern}`);
+        context[binding[1]] = { ...context[binding[1]], [binding[2]]: value };
+    }
+    for (const [pattern, value] of [
+        [/\(0,([\w$]+)\.jsxs\)\(/, { jsx: render, jsxs: render, Fragment: 'Fragment' }],
         [/!([\w$]+)\.includes\(/, []],
-        [/\(0,\w+\.jsxs\)\((\w+)\.A,\{variant:"dense"/, { A: 'Toolbar' }],
-        [/\(0,\w+\.jsx\)\((\w+)\.A,\{label:/, { A: 'Chip' }],
-        [/\(0,\w+\.jsxs\)\((\w+)\.A,\{variant:"contained"/, { A: 'ButtonGroup' }]
+        [/children:\[\(0,[\w$]+\.jsx\)\(([\w$]+),\{\}\)/, 'LibraryViewMenu'],
+        [/\(0,[\w$]+\.jsx\)\(([\w$]+),\{setLibraryViewSettings:/, 'Pagination']
     ]) {
         const binding = component.match(pattern);
         assert.ok(binding, `Missing native toolbar binding: ${pattern}`);
@@ -245,8 +252,15 @@ function exerciseToolbar(original, patched, queryState, expectedDisabled) {
 
 async function main() {
     const files = await readdir(fixtureDirectory);
-    const queryName = files.find(name => /^8463\..*\.chunk\.js\.patched\.js$/.test(name));
-    const toolbarName = files.find(name => /^78701\..*\.chunk\.js\.patched\.js$/.test(name));
+    const assets = [];
+    for (const name of files.filter(name => name.endsWith('.chunk.js'))) {
+        const asset = identifyWebAsset(await readFile(path.join(fixtureDirectory, name), 'utf8'));
+        if (asset) assets.push({ ...asset, name: name + '.patched.js' });
+    }
+    assert.equal(assets.filter(asset => asset.kind === 'modern-library').length, 1, 'Expected one native modern query fixture');
+    assert.equal(assets.filter(asset => asset.kind === 'modern-toolbar').length, 1, 'Expected one native modern toolbar fixture');
+    const queryName = assets.find(asset => asset.kind === 'modern-library')?.name;
+    const toolbarName = assets.find(asset => asset.kind === 'modern-toolbar')?.name;
     assert.ok(queryName && toolbarName, 'Generate modern query and toolbar .patched.js fixtures first');
     const [query, toolbar, originalToolbar, runtimeSource] = await Promise.all([
         readFile(path.join(fixtureDirectory, queryName), 'utf8'),

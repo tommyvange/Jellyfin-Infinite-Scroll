@@ -119,6 +119,37 @@ export function identifyLegacyController(source) {
     };
 }
 
+export function identifyLegacyList(source) {
+    if (!source.includes('queryRecursive') || !source.includes('.itemsContainer.fetchData=') ||
+        !source.includes('getSettingsKey') || !source.includes('totalItemCount')) return null;
+    assert.match(source, /\.currentItem,null,[\w$]+\.StartIndex,[\w$]+\.Limit/,
+        'Missing generic list controller paging invocation');
+    assert.ok(source.includes('btnNextPage'), 'Missing generic list native pagination');
+    return { kind: 'legacy-list' };
+}
+
+export const requiredWebAssetKinds = [
+    'modern-library', 'modern-toolbar', 'legacy-movies', 'legacy-series', 'legacy-list'
+];
+
+/** Identify production assets by their code, independent of webpack IDs/hashes. */
+export function identifyWebAsset(source) {
+    const modern = locateModernHook(source);
+    if (modern) return { kind: 'modern-library', ...modern };
+    const legacy = identifyLegacyController(source);
+    if (legacy) return legacy;
+    const list = identifyLegacyList(source);
+    if (list) return list;
+    const toolbar = locateModernToolbar(source);
+    return toolbar ? { kind: 'modern-toolbar', ...toolbar } : null;
+}
+
+export function assertWebAssetCoverage(report) {
+    for (const kind of requiredWebAssetKinds) {
+        assert.equal(report.filter(entry => entry.kind === kind).length, 1, `Missing or duplicate ${kind} fixture`);
+    }
+}
+
 /** Locate the toolbar's native page-size/count/arrow decision in shipped code. */
 export function locateModernToolbar(source) {
     const anchor = source.indexOf('"ListPaging"');
@@ -186,19 +217,11 @@ async function main() {
             report.push({ file, syntax: 'valid', bytes: Buffer.byteLength(source) });
             continue;
         }
-        const modern = locateModernHook(source);
-        const legacy = identifyLegacyController(source);
-        const toolbar = locateModernToolbar(source);
-        if (modern) report.push({ file, kind: 'modern-library', syntax: 'valid', ...modern });
-        else if (legacy) report.push({ file, syntax: 'valid', ...legacy });
-        else if (toolbar) report.push({ file, kind: 'modern-toolbar', syntax: 'valid', ...toolbar });
+        const asset = identifyWebAsset(source);
+        if (asset) report.push({ file, syntax: 'valid', ...asset });
     }
     assert.ok(report.length, 'No supported library controller/query fingerprints found');
-    if (!args.length && !syntaxOnly) {
-        for (const kind of ['modern-library', 'legacy-movies', 'legacy-series', 'modern-toolbar']) {
-            assert.equal(report.filter(entry => entry.kind === kind).length, 1, `Missing or duplicate ${kind} fixture`);
-        }
-    }
+    if (!syntaxOnly) assertWebAssetCoverage(report);
     console.log(JSON.stringify({ verified: true, files: report }, null, 2));
 }
 

@@ -182,6 +182,29 @@
         });
     }
 
+    // Category links in both layouts open the shared Legacy list controller.
+    // Its native fetch still builds the authenticated, filtered API request;
+    // only the displayed list receives our offset/limit, never playback queries.
+    function legacyList(fetcher, instance, query, host) {
+        var params = instance.params || {};
+        var item = instance.currentItem;
+        if (!item || ['Genre', 'MusicGenre', 'Studio', 'Person'].indexOf(item.Type) === -1 ||
+            ['Programs', 'Recordings', 'nextup'].indexOf(params.type) !== -1) {
+            active = null;
+            detach();
+            return fetcher(query);
+        }
+        var sort = instance.getSortValues();
+        // The controller's paging query contains no filters. Include its current
+        // settings so changing genre, server, sort, filters, or letter resets it.
+        var identity = Object.assign({}, query, {
+            SortBy: sort.sortBy, SortOrder: sort.sortOrder,
+            Filters: instance.getFilters(), Alphabet: instance.alphaPicker && instance.alphaPicker.value(),
+            params: params, item: { Id: item.Id, Type: item.Type }
+        });
+        return legacy(fetcher, identity, host, function () { return instance.itemsContainer.refreshItems(); });
+    }
+
     function scrollTo(host) {
         if (active && active.host === host && active.preserveScroll) return;
         window.scrollTo(0, 0);
@@ -312,7 +335,7 @@
     }
 
     window.JellyfinInfiniteScroll = {
-        useQuery: useQuery, settings: settings, legacy: legacy, scrollTo: scrollTo, autoFocus: autoFocus,
+        useQuery: useQuery, settings: settings, legacy: legacy, legacyList: legacyList, scrollTo: scrollTo, autoFocus: autoFocus,
         paginationDisabled: paginationDisabled, batchSize: batchSize
     };
     window.addEventListener('hashchange', navigated);

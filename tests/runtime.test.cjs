@@ -857,3 +857,135 @@ test('legacy disabled and random queries preserve native paging and query values
         assert.equal(h.pager.hidden, false);
     }
 });
+
+function categoryList(h, { currentItem, params, sort, filters, alphabet, total = 225 } = {}) {
+    const { page, pager } = legacyPage(h);
+    const state = {
+        sort: sort || { sortBy: 'SortName', sortOrder: 'Ascending' },
+        filters: filters || { IsFavorite: true },
+        alphabet: alphabet || ''
+    };
+    const requests = [];
+    const pagingQuery = { StartIndex: 38, Limit: 19 };
+    let result;
+    const instance = {
+        params: params || { serverId: 'server-1', parentId: 'movies-1', genreId: 'comedy' },
+        currentItem: currentItem === undefined ? { Id: 'comedy', Type: 'Genre', CollectionType: 'movies' } : currentItem,
+        getSortValues: () => state.sort,
+        getFilters: () => state.filters,
+        alphaPicker: { value: () => state.alphabet },
+        itemsContainer: h.host
+    };
+    const fetcher = (query) => {
+        requests.push(plain(query));
+        const prefix = `${instance.currentItem?.Id}:${JSON.stringify(state.sort)}:${JSON.stringify(state.filters)}:${state.alphabet}`;
+        return Promise.resolve({
+            Items: Array.from({ length: Math.max(0, Math.min(query.Limit, total - query.StartIndex)) },
+                (_unused, index) => ({ Id: `${prefix}:${query.StartIndex + index}` })),
+            TotalRecordCount: total,
+            StartIndex: query.StartIndex
+        });
+    };
+    h.host.refreshItems = async () => {
+        result = await h.runtime.legacyList(fetcher, instance, pagingQuery, page);
+        return result;
+    };
+    return { instance, state, requests, pagingQuery, page, pager, fetch: h.host.refreshItems,
+        get result() { return result; } };
+}
+
+test('category list bridge starts at zero with default/custom batches and appends via native refreshItems', async () => {
+    for (const batchSize of [undefined, 7]) {
+        const h = createHarness({ batchSize });
+        const list = categoryList(h);
+        const expectedSize = batchSize || 100;
+        await list.fetch();
+        h.frames();
+        assert.equal(list.requests[0].StartIndex, 0);
+        assert.equal(list.requests[0].Limit, expectedSize);
+        assert.equal(list.result.Items.length, expectedSize);
+        assert.equal(list.pager.hidden, true);
+        h.intersect();
+        await h.settle();
+        assert.deepEqual(list.requests.map((query) => query.StartIndex), [0, expectedSize]);
+        assert.ok(list.requests.every((query) => query.Limit === expectedSize));
+        assert.equal(list.result.Items.length, expectedSize * 2);
+        assert.equal(list.result.StartIndex, 0);
+    }
+});
+
+test('genre, music genre, studio, and person result lists support the category bridge', async () => {
+    for (const Type of ['Genre', 'MusicGenre', 'Studio', 'Person']) {
+        const h = createHarness({ batchSize: 7 });
+        const list = categoryList(h, { currentItem: { Id: 'category-1', Type, CollectionType: 'movies' } });
+        await list.fetch();
+        h.frames();
+        assert.equal(list.requests[0].StartIndex, 0, Type);
+        assert.equal(list.requests[0].Limit, 7, Type);
+        assert.equal(list.pager.hidden, true, Type);
+    }
+});
+
+test('category query identity resets accumulated items on sort, filter, alphabet, parent, and category changes', async () => {
+    const h = createHarness({ batchSize: 7 });
+    const list = categoryList(h);
+    await list.fetch();
+    h.frames();
+    const changes = [
+        () => { list.state.sort = { sortBy: 'DateCreated,SortName', sortOrder: 'Descending' }; },
+        () => { list.state.filters = { IsUnplayed: true, IsHD: true }; },
+        () => { list.state.alphabet = 'B'; },
+        () => { list.instance.params.parentId = 'other-library'; },
+        () => { list.instance.currentItem = { Id: 'drama', Type: 'Genre', CollectionType: 'movies' }; }
+    ];
+    for (const change of changes) {
+        h.intersect();
+        await h.settle();
+        assert.equal(list.result.Items.length, 14);
+        change();
+        await list.fetch();
+        h.frames();
+        assert.equal(list.requests.at(-1).StartIndex, 0);
+        assert.equal(list.result.Items.length, 7, 'changed category query replaces accumulated cards');
+    }
+    assert.deepEqual(list.requests.map((query) => query.StartIndex), [0, 7, 0, 7, 0, 7, 0, 7, 0, 7, 0]);
+});
+
+test('category bridge leaves disabled, random, non-category, and special TV lists under native paging', async () => {
+    for (const [config, setup] of [
+        [{ enabled: false }, {}],
+        [{}, { sort: { sortBy: 'Random', sortOrder: 'Ascending' } }],
+        [{}, { currentItem: null }],
+        [{}, { currentItem: { Id: 'folder', Type: 'Folder' } }],
+        [{}, { currentItem: { Id: 'album', Type: 'MusicAlbum' } }],
+        ...['Programs', 'Recordings', 'nextup'].map((type) => [{}, { params: { type, serverId: 'server-1' } }])
+    ]) {
+        const h = createHarness(config);
+        const list = categoryList(h, setup);
+        await list.fetch();
+        h.frames();
+        assert.equal(list.requests[0].StartIndex, 38);
+        assert.equal(list.requests[0].Limit, 19);
+        assert.deepEqual(list.pagingQuery, { StartIndex: 38, Limit: 19 });
+        assert.equal(list.result.__jellyfinInfiniteScroll, undefined);
+        assert.equal(h.sentinel, null);
+        assert.equal(list.pager.hidden, false);
+    }
+});
+
+test('switching an active category list to random sort restores the native paging controls', async () => {
+    const h = createHarness({ batchSize: 7 });
+    const list = categoryList(h);
+    await list.fetch();
+    h.frames();
+    assert.equal(list.pager.hidden, true);
+    list.state.sort = { sortBy: 'Random', sortOrder: 'Ascending' };
+    list.pagingQuery.StartIndex = 19;
+    list.pagingQuery.Limit = 19;
+    await list.fetch();
+    h.frames();
+    assert.equal(list.requests.at(-1).StartIndex, 19);
+    assert.equal(list.requests.at(-1).Limit, 19);
+    assert.equal(h.sentinel, null);
+    assert.equal(list.pager.hidden, false);
+});

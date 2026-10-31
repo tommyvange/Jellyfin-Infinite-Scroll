@@ -25,16 +25,17 @@ export function readReleaseInfo(root = projectRoot) {
     if (pluginId !== config.guid || pluginName !== config.name) {
         throw new Error('Release GUID/name must match Plugin.cs and stay stable for existing installations.');
     }
-    if (!/^\d+\.\d+\.\d+$/.test(config.minimumJellyfinVersion) ||
-        !Array.isArray(config.testedJellyfinVersions) || !config.testedJellyfinVersions.length ||
-        !config.testedJellyfinVersions.includes(config.minimumJellyfinVersion)) {
-        throw new Error('The minimum Jellyfin version must be included in the tested version list.');
+    if (!/^\d+\.\d+\.\d+$/.test(config.minimumJellyfinVersion) || Number(config.minimumJellyfinVersion.split('.')[0]) < 12) {
+        throw new Error('The minimum Jellyfin version must be a three-part version of 12.0.0 or newer.');
     }
-    for (const target of config.testedJellyfinVersions) {
-        if (!/^\d+\.\d+\.\d+$/.test(target) || compareVersions(target, config.minimumJellyfinVersion) < 0 ||
-            !config.webFixtures[target]?.files?.length) {
-            throw new Error(`Missing or invalid compatibility target: ${target}`);
-        }
+    const policy = config.compatibility;
+    const baseline = policy?.baselineWebPackage;
+    if (baseline?.version !== config.minimumJellyfinVersion || !/^[a-f\d]{64}$/.test(baseline?.sha256 ?? '') ||
+        !Number.isSafeInteger(baseline?.size) || baseline.size <= 0 || baseline.size > 100_000_000 ||
+        !/^https:\/\/repo\.jellyfin\.org\/debian\/pool\/.+\.deb$/.test(baseline?.url ?? '') ||
+        policy?.latestReleaseUrl !== 'https://api.github.com/repos/jellyfin/jellyfin/releases/latest' ||
+        !/^https:\/\/repo\.jellyfin\.org\/debian\/dists\/[^/]+\/main\/binary-amd64\/Packages$/.test(policy?.webPackageIndex ?? '')) {
+        throw new Error('Invalid compatibility policy: pin the minimum ABI web package and use official stable release/package metadata.');
     }
     return { version, tag: `v${version}`, config };
 }
@@ -55,7 +56,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     if (process.env.EXPECTED_TAG) validateTag(process.env.EXPECTED_TAG, info);
     if (process.argv.includes('--github-output')) {
         console.log(`version=${info.version}`);
-        console.log(`matrix=${JSON.stringify({ jellyfin: info.config.testedJellyfinVersions })}`);
         console.log(`minimum-jellyfin=${info.config.minimumJellyfinVersion}`);
     } else {
         console.log(JSON.stringify({ ...info, packageFile: packageFileName(info) }, null, 2));

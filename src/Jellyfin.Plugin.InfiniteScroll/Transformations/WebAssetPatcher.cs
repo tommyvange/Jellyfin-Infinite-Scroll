@@ -28,6 +28,7 @@ public static partial class WebAssetPatcher
     {
         if (source.Contains(Marker, StringComparison.Ordinal)) return source;
         if (TryPatchModern(source, out string modern)) return Marker + modern;
+        if (TryPatchLegacyList(source, out string list)) return Marker + list;
         if (TryPatchLegacy(source, out string legacy)) return Marker + legacy;
         if (TryPatchToolbar(source, out string toolbar)) return Marker + toolbar;
         return source;
@@ -130,6 +131,34 @@ public static partial class WebAssetPatcher
         body = Regex.Replace(body, Identifier + @"\.default\.autoFocus\(" + Regex.Escape(host) + @"\)", match =>
             "(window.JellyfinInfiniteScroll?window.JellyfinInfiniteScroll.autoFocus(" + host + ",function(){return " + match.Value + "}):" + match.Value + ")", RegexOptions.None, RegexTimeout);
         patched = source.Remove(start, end - start + 1).Insert(start, body);
+        return true;
+    }
+
+    public static bool TryPatchLegacyList(string source, out string patched)
+    {
+        patched = source;
+        if (!source.Contains(".queryRecursive=", StringComparison.Ordinal) ||
+            !source.Contains("getQueryPagingHtml", StringComparison.Ordinal) ||
+            !source.Contains("GenreIds", StringComparison.Ordinal)) return false;
+
+        // The shared /list page is used by genre links in both layouts. Wrap
+        // only its displayed list fetch, leaving Play All/Queue/Shuffle alone.
+        string pattern = @"(?<instance>" + Identifier + @")\.itemsContainer\.fetchData=function\(\)\{return " + Identifier + @"=!0,(?<request>(?<fetch>" + Identifier + @")\(\k<instance>,(?<parameters>" + Identifier + @"),\k<instance>\.currentItem,null,(?<query>" + Identifier + @")\.StartIndex,\k<query>\.Limit\))\.then\(";
+        Match[] requests = Regex.Matches(source, pattern, RegexOptions.None, RegexTimeout).Cast<Match>().ToArray();
+        if (requests.Length != 1) return false;
+        Match request = requests[0];
+        string instance = request.Groups["instance"].Value;
+        string parameters = request.Groups["parameters"].Value;
+        string setupPattern = Regex.Escape(instance) + @"=this;" + Regex.Escape(instance) + @"\.params=" + Regex.Escape(parameters) + @",this\.itemsContainer=(?<host>" + Identifier + @")\.querySelector\(""\.itemsContainer""\)";
+        Match[] setups = Regex.Matches(source[..request.Index], setupPattern, RegexOptions.None, RegexTimeout).Cast<Match>().ToArray();
+        if (setups.Length != 1) return false;
+
+        string fetch = request.Groups["fetch"].Value;
+        string replacement = "(window.JellyfinInfiniteScroll&&window.JellyfinInfiniteScroll.legacyList?window.JellyfinInfiniteScroll.legacyList(function(infiniteScrollQuery){return " +
+            fetch + "(" + instance + "," + parameters + "," + instance + ".currentItem,null,infiniteScrollQuery.StartIndex,infiniteScrollQuery.Limit)}," +
+            instance + "," + request.Groups["query"].Value + "," + setups[0].Groups["host"].Value + "):" + request.Groups["request"].Value + ")";
+        Group invocation = request.Groups["request"];
+        patched = source.Remove(invocation.Index, invocation.Length).Insert(invocation.Index, replacement);
         return true;
     }
 
