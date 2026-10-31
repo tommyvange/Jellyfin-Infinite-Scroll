@@ -23,6 +23,11 @@
                         <div class="fieldDescription">Default: 100. Smaller batches reduce each request; larger batches load more items together. Allowed range: 1–1000.</div>
                     </div>
                     <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="InfiniteScrollLoadingMessage">Loading more items message</label>
+                        <input id="InfiniteScrollLoadingMessage" type="text" is="emby-input">
+                        <div class="fieldDescription">Shown while another batch is loading. Default: Loading more items… Leave blank to hide the text.</div>
+                    </div>
+                    <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="InfiniteScrollCompletionMessage">All items loaded message</label>
                         <input id="InfiniteScrollCompletionMessage" type="text" is="emby-input">
                         <div class="fieldDescription">Shown when all library items have loaded. Default: All items loaded. Leave blank to hide the message.</div>
@@ -55,6 +60,8 @@
                     ApiClient.getPluginConfiguration(pluginId).then(function (config) {
                         page.querySelector('#InfiniteScrollEnabled').checked = config.Enabled;
                         page.querySelector('#InfiniteScrollBatchSize').value = config.BatchSize;
+                        page.querySelector('#InfiniteScrollLoadingMessage').value =
+                            typeof config.LoadingMessage === 'string' ? config.LoadingMessage : 'Loading more items…';
                         page.querySelector('#InfiniteScrollCompletionMessage').value =
                             typeof config.CompletionMessage === 'string' ? config.CompletionMessage : 'All items loaded.';
                         Dashboard.hideLoadingMsg();
@@ -75,6 +82,7 @@
                     ApiClient.getPluginConfiguration(pluginId).then(function (config) {
                         config.Enabled = page.querySelector('#InfiniteScrollEnabled').checked;
                         config.BatchSize = batchSize;
+                        config.LoadingMessage = page.querySelector('#InfiniteScrollLoadingMessage').value;
                         config.CompletionMessage = page.querySelector('#InfiniteScrollCompletionMessage').value;
                         return ApiClient.updatePluginConfiguration(pluginId, config);
                     }).then(function (result) {

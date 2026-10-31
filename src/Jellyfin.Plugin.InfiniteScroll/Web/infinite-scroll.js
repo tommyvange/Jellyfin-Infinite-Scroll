@@ -5,6 +5,7 @@
 
     var config = window.JellyfinInfiniteScrollConfig || {};
     var batchSize = Math.min(1000, Math.max(1, Math.floor(Number(config.batchSize) || 100)));
+    var loadingMessage = typeof config.loadingMessage === 'string' ? config.loadingMessage : 'Loading more items…';
     var completionMessage = typeof config.completionMessage === 'string' ? config.completionMessage : 'All items loaded.';
     var sessions = new Map();
     var listBindings = new WeakMap();
@@ -334,7 +335,7 @@
                 observer.observe(sentinel);
             }
         }
-        var text = session.loading || session.append ? 'Loading more items…' :
+        var text = session.loading || session.append ? loadingMessage :
             session.error ? 'Could not load more items. ' :
                 session.exhausted ? (session.items.length ? completionMessage : '') : '';
         var signature = text + ':' + session.items.length;

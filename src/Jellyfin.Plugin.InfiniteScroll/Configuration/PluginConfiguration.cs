@@ -8,11 +8,14 @@ public sealed class PluginConfiguration : BasePluginConfiguration
     public const int DefaultBatchSize = 100;
     public const int MinimumBatchSize = 1;
     public const int MaximumBatchSize = 1000;
+    public const string DefaultLoadingMessage = "Loading more items…";
     public const string DefaultCompletionMessage = "All items loaded.";
 
     public bool Enabled { get; set; } = true;
 
     public int BatchSize { get; set; } = DefaultBatchSize;
+
+    public string LoadingMessage { get; set; } = DefaultLoadingMessage;
 
     public string CompletionMessage { get; set; } = DefaultCompletionMessage;
 

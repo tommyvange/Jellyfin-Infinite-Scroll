@@ -4,7 +4,7 @@
 
 A Jellyfin server plugin that replaces paging with lazy loading in the **server-hosted Jellyfin Web client**. Scroll toward the bottom of a library and the next batch appears in the same list. The default batch size is **100**, configurable from **1 to 1000** in the plugin settings.
 
-The completion message is configurable too. Its default is **All items loaded.**; enter your own plain text or leave the setting blank to hide it. Existing configurations keep the default when upgrading.
+The status messages are configurable too. **Loading more items…** appears while a batch is loading, and **All items loaded.** appears at the end. Enter your own plain text or leave either setting blank to hide its text. Existing configurations keep these defaults when upgrading.
 
 The implementation targets Jellyfin **12.0 and newer**. CI verifies the minimum supported version and the **latest stable Jellyfin release**, resolved from official release metadata on every run. The current production checks pass for **12.0 and 12.4** (31 October 2026). If Jellyfin changes an integration point, its asset is left intact and CI reports the incompatibility. Future major releases are checked automatically, but support depends on their server API, framework and web integration remaining compatible.
 
@@ -12,7 +12,7 @@ The implementation targets Jellyfin **12.0 and newer**. CI verifies the minimum 
 
 - **Modern layout:** Movies, Shows, Episodes, Favorites, Collections, Playlists, Albums, Artists, Album Artists, Songs, Studios/Networks, Books, Authors, Photos, Photo Albums, Videos, Music Videos, Mixed Media, and Folders, using their native ItemsView queries.
 - **Legacy layout:** Movies and Shows, including the Movies controller's Favorites mode and its card/list layouts.
-- **Category results in both layouts:** Movies → Categories → Comedy and other genre results, plus the shared list page's music genre, studio, and person results. These pages use the configured batch size and completion message too.
+- **Category results in both layouts:** Movies → Categories → Comedy and other genre results, plus the shared list page's music genre, studio, and person results. These pages use the configured batch size and status messages too.
 - Jellyfin's native cards, item actions, selection, filters, alphabet picker, image loading, and sort order are retained. Modern paging arrows are removed and the toolbar shows the total item count. Legacy library paging is hidden while scrolling is active.
 - Requests load one batch at a time, stop at the server's total, and retain existing items when an appended request fails. A Retry button repeats the failed offset. Filters and ordinary refreshes start a new result set.
 
@@ -30,7 +30,7 @@ Native Android TV, Swiftfin, and other clients that render their own UI are outs
    ```
 
 3. Install **Infinite Scroll** from the catalog, restart Jellyfin, and hard-refresh the web client. The server log should include `Infinite Scroll registered its web transformations with File Transformation.`
-4. Open **Dashboard → Plugins → Infinite Scroll**, choose the batch size and **All items loaded message**, and save. Reload open Jellyfin tabs after changing the settings. The settings apply to all users of the server-hosted web client.
+4. Open **Dashboard → Plugins → Infinite Scroll**, choose the batch size, **Loading more items message**, and **All items loaded message**, and save. Reload open Jellyfin tabs after changing the settings. The settings apply to all users of the server-hosted web client.
 
 The [catalog](https://raw.githubusercontent.com/tommyvange/Jellyfin-Infinite-Scroll/manifest/manifest.json) and [GitHub Releases](https://github.com/tommyvange/Jellyfin-Infinite-Scroll/releases) also provide ZIPs for manual installation: stop Jellyfin and extract all ZIP contents (the DLL, `meta.json`, and plugin image) directly into `plugins/Infinite Scroll_<version>/`. For the official Docker image, the plugin directory is normally `/config/plugins/`.
 

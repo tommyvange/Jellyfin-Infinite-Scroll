@@ -23,6 +23,7 @@ public sealed class ClientController : ControllerBase
         {
             enabled = settings?.Enabled ?? false,
             batchSize = settings?.GetEffectiveBatchSize() ?? PluginConfiguration.DefaultBatchSize,
+            loadingMessage = settings?.LoadingMessage ?? PluginConfiguration.DefaultLoadingMessage,
             completionMessage = settings?.CompletionMessage ?? PluginConfiguration.DefaultCompletionMessage
         });
 
