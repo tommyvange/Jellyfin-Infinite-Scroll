@@ -55,6 +55,10 @@ function createHarness(config = {}, { intersectionObserver = true } = {}) {
             if (!this.parentNode) return null;
             return this.parentNode.children[this.parentNode.children.indexOf(this) - 1] || null;
         }
+        get nextElementSibling() {
+            if (!this.parentNode) return null;
+            return this.parentNode.children[this.parentNode.children.indexOf(this) + 1] || null;
+        }
         get textContent() {
             return this.ownText + this.children.map((child) => child.textContent).join('');
         }
@@ -81,10 +85,10 @@ function createHarness(config = {}, { intersectionObserver = true } = {}) {
             }
         }
         insertAdjacentElement(position, element) {
-            assert.equal(position, 'afterend');
+            assert.ok(['beforebegin', 'afterend'].includes(position));
             element.remove();
             const siblings = this.parentNode.children;
-            siblings.splice(siblings.indexOf(this) + 1, 0, element);
+            siblings.splice(siblings.indexOf(this) + (position === 'afterend' ? 1 : 0), 0, element);
             element.parentNode = this.parentNode;
         }
         querySelectorAll(selector) {
@@ -243,11 +247,19 @@ function deferred() {
 function legacyPage(h) {
     h.host.remove();
     const page = new h.Element('div', 'page');
-    const pager = new h.Element('div', 'paging');
+    const pagers = [new h.Element('div', 'paging'), new h.Element('div', 'paging')];
+    for (const pager of pagers) {
+        const range = new h.Element('span', 'pagingRange');
+        range.textContent = '1 - 19 of 225';
+        pager.appendChild(range);
+        pager.appendChild(new h.Element('button', 'btnPreviousPage'));
+        pager.appendChild(new h.Element('button', 'btnNextPage'));
+    }
+    page.appendChild(pagers[0]);
     page.appendChild(h.host);
-    page.appendChild(pager);
+    page.appendChild(pagers[1]);
     h.document.body.appendChild(page);
-    return { page, pager };
+    return { page, pager: pagers[0], pagers };
 }
 
 test('configuration defaults to 100 and clamps positive sizes to 1–1000', () => {
@@ -318,6 +330,7 @@ test('modern wrapper preserves native query options, result, signal, and library
     assert.equal(native.result.data.StartIndex, 0);
     assert.equal(h.pager.hidden, true);
     assert.equal(h.runtime.paginationDisabled(), true);
+    assert.equal(h.document.querySelector('.jellyfin-infinite-scroll-total'), null, 'modern toolbar retains its own count');
     assert.equal(h.sentinel.textContent, 'All items loaded.');
     assert.equal(h.sentinel.getAttribute('role'), 'status');
     assert.equal(h.sentinel.getAttribute('aria-live'), 'polite');
@@ -745,6 +758,7 @@ test('legacy adapter retains filters, disables pagination, appends, and preserve
     assert.equal(query.StartIndex, 0);
     assert.equal(query.Limit, 2);
     assert.equal(legacyPager.hidden, true);
+    assert.equal(page.querySelector('.jellyfin-infinite-scroll-total'), null, 'main legacy libraries keep their existing count behavior');
     h.runtime.scrollTo(page);
     h.runtime.autoFocus(page, () => { focusCalls++; });
     assert.equal(focusCalls, 1, 'initial load keeps native focus behavior');
@@ -859,11 +873,11 @@ test('legacy disabled and random queries preserve native paging and query values
 });
 
 function categoryList(h, { currentItem, params, sort, filters, alphabet, total = 225 } = {}) {
-    const { page, pager } = legacyPage(h);
+    const { page, pager, pagers } = legacyPage(h);
     const state = {
         sort: sort || { sortBy: 'SortName', sortOrder: 'Ascending' },
         filters: filters || { IsFavorite: true },
-        alphabet: alphabet || ''
+        alphabet: alphabet || '', total
     };
     const requests = [];
     const pagingQuery = { StartIndex: 38, Limit: 19 };
@@ -879,10 +893,11 @@ function categoryList(h, { currentItem, params, sort, filters, alphabet, total =
     const fetcher = (query) => {
         requests.push(plain(query));
         const prefix = `${instance.currentItem?.Id}:${JSON.stringify(state.sort)}:${JSON.stringify(state.filters)}:${state.alphabet}`;
+        const recordCount = Number.isFinite(state.total) ? state.total : 225;
         return Promise.resolve({
-            Items: Array.from({ length: Math.max(0, Math.min(query.Limit, total - query.StartIndex)) },
+            Items: Array.from({ length: Math.max(0, Math.min(query.Limit, recordCount - query.StartIndex)) },
                 (_unused, index) => ({ Id: `${prefix}:${query.StartIndex + index}` })),
-            TotalRecordCount: total,
+            TotalRecordCount: state.total,
             StartIndex: query.StartIndex
         });
     };
@@ -890,7 +905,7 @@ function categoryList(h, { currentItem, params, sort, filters, alphabet, total =
         result = await h.runtime.legacyList(fetcher, instance, pagingQuery, page);
         return result;
     };
-    return { instance, state, requests, pagingQuery, page, pager, fetch: h.host.refreshItems,
+    return { instance, state, requests, pagingQuery, page, pager, pagers, fetch: h.host.refreshItems,
         get result() { return result; } };
 }
 
@@ -912,6 +927,88 @@ test('category list bridge starts at zero with default/custom batches and append
         assert.equal(list.result.Items.length, expectedSize * 2);
         assert.equal(list.result.StartIndex, 0);
     }
+});
+
+test('category header shows the full total above the list while both native ranges and arrows stay hidden', async () => {
+    const h = createHarness();
+    const list = categoryList(h, { total: 731 });
+    await list.fetch();
+    h.frames();
+    const totals = list.page.querySelectorAll('.jellyfin-infinite-scroll-total');
+    assert.equal(totals.length, 1, 'one header count is shown for top and bottom native pagers');
+    assert.equal(totals[0].textContent, '731');
+    assert.equal(totals[0].getAttribute('aria-live'), 'polite');
+    assert.ok(totals[0].getClientRects().length > 0);
+    assert.strictEqual(list.pager.previousElementSibling, totals[0], 'count replaces the top pager position');
+    assert.ok(list.page.children.indexOf(totals[0]) < list.page.children.indexOf(h.host), 'count appears above the cards');
+    assert.equal(list.result.Items.length, 100, 'header total is independent of loaded cards');
+    for (const pager of list.pagers) {
+        assert.equal(pager.hidden, true);
+        assert.equal(pager.querySelector('.pagingRange').getClientRects().length, 0);
+        assert.equal(pager.querySelector('.btnNextPage').getClientRects().length, 0);
+        assert.equal(pager.querySelector('.btnPreviousPage').getClientRects().length, 0);
+    }
+    h.intersect();
+    await h.settle();
+    assert.equal(list.result.Items.length, 200);
+    assert.equal(totals[0].textContent, '731');
+    list.state.filters = { IsUnplayed: true };
+    list.state.total = 42;
+    await list.fetch();
+    h.frames();
+    assert.equal(list.page.querySelector('.jellyfin-infinite-scroll-total').textContent, '42');
+    assert.equal(list.result.Items.length, 42);
+});
+
+test('category count distinguishes a known zero from unknown totals and never substitutes the loaded count', async () => {
+    const h = createHarness();
+    const list = categoryList(h, { total: 731 });
+    await list.fetch();
+    h.frames();
+    assert.equal(list.page.querySelector('.jellyfin-infinite-scroll-total').textContent, '731');
+    list.state.filters = { IsUnplayed: true };
+    list.state.total = 0;
+    await list.fetch();
+    h.frames();
+    const zero = list.page.querySelector('.jellyfin-infinite-scroll-total');
+    assert.equal(zero.textContent, '0');
+    assert.ok(zero.getClientRects().length > 0);
+    list.state.filters = { IsPlayed: true };
+    list.state.total = undefined;
+    await list.fetch();
+    h.frames();
+    assert.equal(list.result.Items.length, 100);
+    const unknown = list.page.querySelector('.jellyfin-infinite-scroll-total');
+    assert.equal(unknown, null, 'unknown total does not become 100 loaded cards or the previous total');
+});
+
+test('category count is removed for native paging and navigation, restored from cache, and removed on destroy', async () => {
+    const h = createHarness();
+    const list = categoryList(h, { total: 731 });
+    const route = h.window.location.href;
+    await list.fetch();
+    h.frames();
+    assert.equal(list.page.querySelector('.jellyfin-infinite-scroll-total').textContent, '731');
+    h.navigate('https://jellyfin.example/web/#/details?id=movie-1');
+    assert.equal(list.page.querySelector('.jellyfin-infinite-scroll-total'), null);
+    assert.ok(list.pagers.every(pager => !pager.hidden));
+    h.navigate(route, 'popstate');
+    list.page.listeners.get('viewshow')({ detail: { isRestored: true } });
+    h.frames();
+    assert.equal(list.requests.length, 1);
+    assert.equal(list.page.querySelector('.jellyfin-infinite-scroll-total').textContent, '731');
+    assert.ok(list.pagers.every(pager => pager.hidden));
+    list.state.sort = { sortBy: 'Random', sortOrder: 'Ascending' };
+    await list.fetch();
+    h.frames();
+    assert.equal(list.page.querySelector('.jellyfin-infinite-scroll-total'), null);
+    assert.ok(list.pagers.every(pager => !pager.hidden));
+    list.state.sort = { sortBy: 'SortName', sortOrder: 'Ascending' };
+    await list.fetch();
+    h.frames();
+    list.page.listeners.get('viewdestroy')({ detail: {} });
+    assert.equal(list.page.querySelector('.jellyfin-infinite-scroll-total'), null);
+    assert.ok(list.pagers.every(pager => !pager.hidden));
 });
 
 test('genre, music genre, studio, and person result lists support the category bridge', async () => {
@@ -970,6 +1067,7 @@ test('category bridge leaves disabled, random, non-category, and special TV list
         assert.equal(list.result.__jellyfinInfiniteScroll, undefined);
         assert.equal(h.sentinel, null);
         assert.equal(list.pager.hidden, false);
+        assert.equal(list.page.querySelector('.jellyfin-infinite-scroll-total'), null);
     }
 });
 

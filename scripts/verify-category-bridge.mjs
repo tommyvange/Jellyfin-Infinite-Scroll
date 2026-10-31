@@ -70,9 +70,9 @@ function createBoundary(config) {
             this.parentNode = null;
         }
         insertAdjacentElement(position, element) {
-            assert.equal(position, 'afterend');
+            assert.ok(['beforebegin', 'afterend'].includes(position));
             element.remove();
-            this.parentNode.children.splice(this.parentNode.children.indexOf(this) + 1, 0, element);
+            this.parentNode.children.splice(this.parentNode.children.indexOf(this) + (position === 'afterend' ? 1 : 0), 0, element);
             element.parentNode = this.parentNode;
         }
         addEventListener(name, callback) {
@@ -88,10 +88,17 @@ function createBoundary(config) {
         querySelectorAll: selector => document.body.querySelectorAll(selector)
     };
     const view = document.body.appendChild(new Element('page'));
+    const topPager = view.appendChild(new Element('paging'));
     const items = view.appendChild(new Element('itemsContainer vertical-wrap'));
-    const pager = view.appendChild(new Element('paging'));
-    const next = pager.appendChild(new Element('btnNextPage'));
-    pager.appendChild(new Element('btnPreviousPage'));
+    const bottomPager = view.appendChild(new Element('paging'));
+    const pagers = [topPager, bottomPager];
+    for (const pager of pagers) {
+        const range = pager.appendChild(new Element('pagingRange'));
+        range.textContent = '1 - 19 of 225';
+        pager.appendChild(new Element('btnPreviousPage'));
+        pager.appendChild(new Element('btnNextPage'));
+    }
+    const next = topPager.querySelector('.btnNextPage');
     view.appendChild(new Element('alphaPicker'));
     const actions = {};
     for (const action of ['Play', 'Queue', 'Shuffle']) actions[action.toLowerCase()] = view.appendChild(new Element(`btn${action}`));
@@ -115,12 +122,13 @@ function createBoundary(config) {
         }
     };
     return {
-        window, view, items, pager, next, actions,
+        window, view, items, pager: topPager, pagers, next, actions,
         navigate(href, event = 'hashchange') {
             window.location.href = href;
             windowEvents.get(event)?.forEach(callback => callback({}));
         },
         get sentinel() { return view.querySelector('.jellyfin-infinite-scroll-sentinel'); },
+        get total() { return view.querySelector('.jellyfin-infinite-scroll-total'); },
         frames() {
             let count = 0;
             while (frames.length) {
@@ -169,7 +177,7 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
     const records = Array.from({ length: recordCount }, (_unused, index) => ({ Id: `movie-${index}`, Name: `Movie ${index}` }));
     const state = {
         sort: sort ?? { sortBy: 'SortName', sortOrder: 'Ascending' },
-        filters: { IsFavorite: true }, alphabet: 'A',
+        filters: { IsFavorite: true }, alphabet: 'A', total: recordCount,
         item: item === undefined ? { Id: 'comedy', Name: 'Comedy', Type: 'Genre', CollectionType: 'movies' } : item
     };
     const api = {
@@ -190,7 +198,8 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
     function response(method, userId, query) {
         requests.push({ method, userId, query: normalize(query) });
         const offset = query.StartIndex ?? 0;
-        const result = { Items: records.slice(offset, offset + (query.Limit ?? records.length)), TotalRecordCount: records.length, StartIndex: offset };
+        const filteredRecords = Number.isFinite(state.total) ? records.slice(0, state.total) : records;
+        const result = { Items: filteredRecords.slice(offset, offset + (query.Limit ?? records.length)), TotalRecordCount: state.total, StartIndex: offset };
         if (method === 'getItems' && state.nextItemsResponse) {
             const responseGate = state.nextItemsResponse;
             state.nextItemsResponse = null;
@@ -348,6 +357,14 @@ async function exerciseFallback(source, runtimeSource, config, options, label) {
     assert.equal(h.result.__jellyfinInfiniteScroll, undefined);
     assert.equal(h.boundary.sentinel, null);
     assert.equal(h.boundary.pager.hidden, false);
+    assert.equal(h.boundary.total, null, 'Native pagination does not get a separate infinite-scroll count');
+    assert.ok(h.boundary.pagers.every(pager => !pager.hidden));
+    for (const pager of h.boundary.pagers) {
+        const paging = JSON.parse(pager.innerHTML);
+        assert.equal(paging.startIndex, 0);
+        assert.equal(paging.limit, 19);
+        assert.equal(paging.totalRecordCount, 225);
+    }
     h.boundary.next.click();
     await h.boundary.settle();
     assert.equal(h.requests.at(-1).query.StartIndex, 19);
@@ -423,6 +440,7 @@ async function exerciseRestoredView(source, runtimeSource) {
     h.boundary.view.dispatch('viewhide');
     h.boundary.navigate('https://jellyfin.example/web/#/details?id=movie-1');
     assert.equal(h.boundary.sentinel, null);
+    assert.equal(h.boundary.total, null);
     h.boundary.navigate(categoryRoute, 'popstate');
     h.boundary.view.dispatch('viewshow', { isRestored: true });
     await h.boundary.settle();
@@ -430,6 +448,7 @@ async function exerciseRestoredView(source, runtimeSource) {
     assert.equal(h.requests.length, 2, 'Native resume(false) does not fetch the first page again');
     assert.strictEqual(h.result, cachedResult, 'Already rendered accumulated cards survive returning from details');
     assert.ok(h.boundary.sentinel, 'Restored cached category view reattaches infinite scrolling');
+    assert.equal(h.boundary.total.textContent, '225', 'Cached restoration rebuilds the full header count');
     assert.equal(h.boundary.pager.hidden, true);
     h.boundary.intersect();
     await h.boundary.settle();
@@ -437,6 +456,7 @@ async function exerciseRestoredView(source, runtimeSource) {
     assert.equal(h.result.Items.length, 21);
     h.boundary.view.dispatch('viewdestroy');
     assert.equal(h.boundary.sentinel, null);
+    assert.equal(h.boundary.total, null);
     assert.equal(h.boundary.pager.hidden, false);
     console.log('PASS: actual native restored viewshow + resume(false) keeps cached cards and resumes loading at the next offset; destroying the view removes its sentinel.');
 }
@@ -471,6 +491,55 @@ async function exerciseAbandonedFinalBatch(source, runtimeSource) {
     console.log('PASS: a final batch resolved while away cannot exhaust cached category cards; returning retries the unrendered offset and renders all 150 cards once.');
 }
 
+async function exerciseCategoryCount(source, runtimeSource) {
+    const h = createController(source, runtimeSource, {}, { recordCount: 731 });
+    await h.fetch();
+    h.boundary.frames();
+    assert.equal(h.result.Items.length, 100);
+    assert.equal(h.boundary.total.textContent, '731', 'Header displays full category total while only one batch is loaded');
+    assert.equal(h.boundary.total.getAttribute('aria-live'), 'polite');
+    assert.equal(h.boundary.view.querySelectorAll('.jellyfin-infinite-scroll-total').length, 1);
+    assert.strictEqual(h.boundary.pager.previousElementSibling, h.boundary.total, 'Header count occupies the first native pager position');
+    for (const pager of h.boundary.pagers) {
+        assert.equal(pager.hidden, true);
+        assert.equal(pager.querySelector('.pagingRange').getClientRects().length, 0);
+        assert.equal(pager.querySelector('.btnNextPage').getClientRects().length, 0);
+        assert.equal(pager.querySelector('.btnPreviousPage').getClientRects().length, 0);
+    }
+    h.boundary.intersect();
+    await h.boundary.settle();
+    assert.equal(h.result.Items.length, 200);
+    assert.equal(h.boundary.total.textContent, '731');
+    h.state.filters = { IsUnplayed: true };
+    h.state.total = 23;
+    await h.fetch();
+    h.boundary.frames();
+    assert.equal(h.result.Items.length, 23);
+    assert.equal(h.boundary.total.textContent, '23', 'Native filtered total updates the header');
+    h.state.filters = { IsPlayed: true };
+    h.state.total = 0;
+    await h.fetch();
+    h.boundary.frames();
+    assert.equal(h.boundary.total.textContent, '0');
+    assert.ok(h.boundary.total.getClientRects().length > 0);
+    h.state.filters = {};
+    h.state.total = undefined;
+    await h.fetch();
+    h.boundary.frames();
+    assert.equal(h.result.Items.length, 100);
+    assert.equal(h.boundary.total, null, 'Unknown API totals never display the loaded count');
+    h.state.total = 731;
+    await h.fetch();
+    h.boundary.frames();
+    assert.equal(h.boundary.total.textContent, '731');
+    h.state.sort = { sortBy: 'Random', sortOrder: 'Ascending' };
+    await h.fetch();
+    h.boundary.frames();
+    assert.equal(h.boundary.total, null);
+    assert.ok(h.boundary.pagers.every(pager => !pager.hidden));
+    console.log('PASS: category header shows full total 731 above 100 loaded cards; filters, zero/unknown totals, both native pagers, and random-sort cleanup behave correctly.');
+}
+
 async function main() {
     const files = await readdir(fixtureDirectory);
     const candidates = [];
@@ -492,6 +561,7 @@ async function main() {
     await exercisePlayback(source, runtimeSource);
     await exerciseRestoredView(source, runtimeSource);
     await exerciseAbandonedFinalBatch(source, runtimeSource);
+    await exerciseCategoryCount(source, runtimeSource);
     console.log(`PASS: production category bridge ${name}.`);
 }
 

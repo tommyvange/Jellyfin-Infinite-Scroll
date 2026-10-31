@@ -13,6 +13,7 @@
     var active = null;
     var observer = null;
     var sentinel = null;
+    var totalCount = null;
     var queued = false;
     var supportedViews = new Set([
         'movies', 'series', 'episodes', 'favorites', 'collections', 'playlists',
@@ -238,6 +239,7 @@
             params: params, item: { Id: item.Id, Type: item.Type }
         });
         var result = legacy(fetcher, identity, host, function () { return instance.itemsContainer.refreshItems(); });
+        if (active) active.showTotal = true;
         rememberListSession(host, active);
         return result;
     }
@@ -261,6 +263,7 @@
         observer = null;
         if (sentinel) sentinel.remove();
         sentinel = null;
+        removeTotalCount();
         window.document.querySelectorAll('[data-jellyfin-infinite-scroll-paging]').forEach(function (element) {
             element.hidden = false;
             element.removeAttribute('data-jellyfin-infinite-scroll-paging');
@@ -292,6 +295,30 @@
         });
     }
 
+    function removeTotalCount() {
+        if (totalCount) totalCount.remove();
+        totalCount = null;
+    }
+
+    function renderTotalCount(session) {
+        var pager = session.showTotal && session.host && session.host.querySelector('.paging');
+        if (!pager || !Number.isFinite(session.total)) {
+            removeTotalCount();
+            return;
+        }
+        // Keep the server's filtered total in the top toolbar, separate from
+        // native range/arrow markup that Jellyfin replaces after each batch.
+        if (!totalCount || pager.previousElementSibling !== totalCount) {
+            removeTotalCount();
+            totalCount = window.document.createElement('div');
+            totalCount.className = 'listPaging jellyfin-infinite-scroll-total';
+            totalCount.setAttribute('aria-live', 'polite');
+            pager.insertAdjacentElement('beforebegin', totalCount);
+        }
+        var text = String(session.total);
+        if (totalCount.textContent !== text) totalCount.textContent = text;
+    }
+
     function loadMore() {
         var session = active;
         if (!session || session.loading || session.append || session.exhausted || !session.refresh ||
@@ -319,6 +346,7 @@
             return;
         }
         hidePaging(session);
+        renderTotalCount(session);
         if (!sentinel || sentinel.previousElementSibling !== host) {
             if (observer) observer.disconnect();
             if (sentinel) sentinel.remove();

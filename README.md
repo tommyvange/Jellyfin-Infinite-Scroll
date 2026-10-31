@@ -13,6 +13,7 @@ The implementation targets Jellyfin **12.0 and newer**. CI verifies the minimum 
 - **Modern layout:** Movies, Shows, Episodes, Favorites, Collections, Playlists, Albums, Artists, Album Artists, Songs, Studios/Networks, Books, Authors, Photos, Photo Albums, Videos, Music Videos, Mixed Media, and Folders, using their native ItemsView queries.
 - **Legacy layout:** Movies and Shows, including the Movies controller's Favorites mode and its card/list layouts.
 - **Category results in both layouts:** Movies → Categories → Comedy and other genre results, plus the shared list page's music genre, studio, and person results. These pages use the configured batch size and status messages too.
+- The category toolbar shows the server's total for the current filters, such as **731**, while the page range and pagination arrows are hidden. The count stays the same as more items load and updates when the filtered total changes.
 - Jellyfin's native cards, item actions, selection, filters, alphabet picker, image loading, and sort order are retained. Modern paging arrows are removed and the toolbar shows the total item count. Legacy library paging is hidden while scrolling is active.
 - Requests load one batch at a time, stop at the server's total, and retain existing items when an appended request fails. A Retry button repeats the failed offset. Filters and ordinary refreshes start a new result set.
 
@@ -79,7 +80,7 @@ These checks do not replace testing on a running Jellyfin server with an actual 
 
 ## GitHub releases and catalog
 
-Push a version tag matching `Directory.Build.props`, such as `v1.2.0.0`, to publish a stable release. Actions reruns all checks, publishes the tested minimum-ABI ZIP and SHA-256 sidecar, and then updates the generated catalog on the `manifest` branch. The catalog contains Jellyfin's required MD5 checksum of the exact published ZIP, with a fixed release URL and prior versions retained. No personal access token, custom server, or GitHub Pages configuration is required.
+Push a version tag matching `Directory.Build.props`, such as `v1.2.1.0`, to publish a stable release. Actions reruns all checks, publishes the tested minimum-ABI ZIP and SHA-256 sidecar, and then updates the generated catalog on the `manifest` branch. The catalog contains Jellyfin's required MD5 checksum of the exact published ZIP, with a fixed release URL and prior versions retained. No personal access token, custom server, or GitHub Pages configuration is required.
 
 See [the release guide](docs/releasing.md) for versioning, retries, and the baseline/latest compatibility policy.
 

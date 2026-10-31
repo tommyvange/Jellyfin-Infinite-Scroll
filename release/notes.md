@@ -1,11 +1,8 @@
 Infinite Scroll for the server-hosted Jellyfin Web client.
 
-- Add infinite scrolling to category/genre result pages opened from both Modern and Legacy layouts, including Movies → Categories → Comedy.
-- Preserve the native genre and parent-library filters, sorting, alphabet picker, cards, and playback actions. Play All, Queue, and Shuffle keep their original requests.
-- Use the configured batch size and completion message on category result pages too, with retry support for failed batches.
-- Customize the loading message in the plugin settings, or leave it blank to hide the loading text.
-- Resume the accumulated category list when returning from item details, including when a batch was in flight during navigation.
-- Check the minimum supported Jellyfin version and the latest stable release automatically, instead of maintaining a growing list of every minor version.
+- Show the category's total item count at the top of its results, such as 731, while hiding the native page range and pagination arrows.
+- Use the server's total for the current category and filters, independently of how many items have loaded so far.
+- Restore the count when returning from item details and restore native pagination when infinite scrolling is disabled or random sorting is selected.
 
 Install File Transformation 3.x matching your Jellyfin server version before installing Infinite Scroll. Restart Jellyfin and reload the web client after installation.
 
