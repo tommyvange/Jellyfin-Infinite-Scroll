@@ -989,3 +989,92 @@ test('switching an active category list to random sort restores the native pagin
     assert.equal(h.sentinel, null);
     assert.equal(list.pager.hidden, false);
 });
+
+test('returning to a restored category view reattaches infinite scrolling without refetching its accumulated cards', async () => {
+    const h = createHarness({ batchSize: 7 });
+    const list = categoryList(h);
+    const categoryRoute = h.window.location.href;
+    await list.fetch();
+    h.frames();
+    h.intersect();
+    await h.settle();
+    assert.equal(list.result.Items.length, 14);
+    h.navigate('https://jellyfin.example/web/#/details?id=movie-1');
+    assert.equal(h.sentinel, null);
+    h.navigate(categoryRoute, 'popstate');
+    assert.equal(h.sentinel, null);
+    const restored = list.page.listeners.get('viewshow');
+    assert.equal(typeof restored, 'function', 'category host can restore its display session');
+    restored({ detail: { isRestored: true } });
+    h.frames();
+    assert.equal(list.requests.length, 2, 'restoration uses native cached cards');
+    assert.equal(list.result.Items.length, 14);
+    assert.ok(h.sentinel);
+    assert.equal(list.pager.hidden, true);
+    h.intersect();
+    await h.settle();
+    assert.deepEqual(list.requests.map(query => query.StartIndex), [0, 7, 14]);
+    assert.equal(list.result.Items.length, 21);
+});
+
+test('destroyed category views cannot reactivate their old session after navigation', async () => {
+    const h = createHarness({ batchSize: 7 });
+    const list = categoryList(h);
+    const categoryRoute = h.window.location.href;
+    await list.fetch();
+    h.frames();
+    const destroy = list.page.listeners.get('viewdestroy');
+    assert.equal(typeof destroy, 'function', 'category host releases its display session');
+    destroy({ detail: {} });
+    assert.equal(h.sentinel, null);
+    assert.equal(list.pager.hidden, false);
+    h.navigate('https://jellyfin.example/web/#/details?id=movie-1');
+    h.navigate(categoryRoute, 'popstate');
+    list.page.listeners.get('viewshow')({ detail: { isRestored: true } });
+    h.frames();
+    assert.equal(h.sentinel, null);
+    assert.equal(list.requests.length, 1);
+});
+
+test('an append resolved while away cannot exhaust a restored category whose cached cards were never updated', async () => {
+    const h = createHarness({ batchSize: 100 });
+    const { page } = legacyPage(h);
+    const categoryRoute = h.window.location.href;
+    const pendingAppend = deferred();
+    const requested = [];
+    const records = Array.from({ length: 150 }, (_unused, index) => ({ Id: `movie-${index}` }));
+    let result;
+    const instance = {
+        params: { serverId: 'server-1', parentId: 'movies', genreId: 'comedy' },
+        currentItem: { Id: 'comedy', Type: 'Genre', CollectionType: 'movies' },
+        getSortValues: () => ({ sortBy: 'SortName', sortOrder: 'Ascending' }),
+        getFilters: () => ({}), itemsContainer: h.host
+    };
+    const fetcher = query => {
+        requested.push(query.StartIndex);
+        return query.StartIndex === 0 ? Promise.resolve({
+            Items: records.slice(0, 100), TotalRecordCount: records.length
+        }) : pendingAppend.promise;
+    };
+    h.host.refreshItems = async () => {
+        result = await h.runtime.legacyList(fetcher, instance, { StartIndex: 0, Limit: 19 }, page);
+        return result;
+    };
+    await h.host.refreshItems();
+    h.frames();
+    h.intersect();
+    await h.settle();
+    h.navigate('https://jellyfin.example/web/#/details?id=movie-1');
+    pendingAppend.resolve({ Items: records.slice(100), TotalRecordCount: records.length });
+    await h.settle();
+    assert.equal(result.Items.length, 100, 'native cached cards were not updated after leaving the view');
+    h.navigate(categoryRoute, 'popstate');
+    page.listeners.get('viewshow')({ detail: { isRestored: true } });
+    h.frames();
+    assert.doesNotMatch(h.sentinel.textContent, /All items loaded/);
+    h.intersect();
+    await h.settle();
+    assert.deepEqual(requested, [0, 100, 100], 'abandoned final batch is requested at the cached display offset');
+    assert.deepEqual(ids(result), records.map(item => item.Id));
+    assert.equal(h.sentinel.textContent, 'All items loaded.');
+});

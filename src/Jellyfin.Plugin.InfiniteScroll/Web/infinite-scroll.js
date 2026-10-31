@@ -7,6 +7,7 @@
     var batchSize = Math.min(1000, Math.max(1, Math.floor(Number(config.batchSize) || 100)));
     var completionMessage = typeof config.completionMessage === 'string' ? config.completionMessage : 'All items loaded.';
     var sessions = new Map();
+    var listBindings = new WeakMap();
     var currentInvocation = null;
     var active = null;
     var observer = null;
@@ -89,6 +90,11 @@
             var result = await request;
             if (context && context.signal && context.signal.aborted) throw new DOMException('Aborted', 'AbortError');
             if (generation !== session.generation) throw new DOMException('Superseded', 'AbortError');
+            // A paused Legacy view will not render this response. Keep its saved
+            // offset aligned with the cards actually retained for back navigation.
+            if (session.host && (active !== session || session.route !== window.location.href)) {
+                throw new DOMException('Superseded', 'AbortError');
+            }
             return merge(session, result, offset);
         } catch (error) {
             if (generation !== session.generation) throw new DOMException('Superseded', 'AbortError');
@@ -182,6 +188,33 @@
         });
     }
 
+    function rememberListSession(host, session) {
+        var binding = listBindings.get(host);
+        if (!binding) {
+            if (!session) return;
+            binding = { session: null };
+            listBindings.set(host, binding);
+            // Returning from details resumes cached cards without another fetch.
+            // Reattach the loader to that saved result, retaining its raw offset.
+            host.addEventListener('viewshow', function () {
+                var restored = binding.session;
+                if (restored && restored.route === window.location.href && visible(host)) {
+                    active = restored;
+                    schedule();
+                }
+            });
+            host.addEventListener('viewdestroy', function () {
+                if (active && active === binding.session) {
+                    active = null;
+                    detach();
+                }
+                binding.session = null;
+                listBindings.delete(host);
+            });
+        }
+        binding.session = session;
+    }
+
     // Category links in both layouts open the shared Legacy list controller.
     // Its native fetch still builds the authenticated, filtered API request;
     // only the displayed list receives our offset/limit, never playback queries.
@@ -192,6 +225,7 @@
             ['Programs', 'Recordings', 'nextup'].indexOf(params.type) !== -1) {
             active = null;
             detach();
+            rememberListSession(host, null);
             return fetcher(query);
         }
         var sort = instance.getSortValues();
@@ -202,7 +236,9 @@
             Filters: instance.getFilters(), Alphabet: instance.alphaPicker && instance.alphaPicker.value(),
             params: params, item: { Id: item.Id, Type: item.Type }
         });
-        return legacy(fetcher, identity, host, function () { return instance.itemsContainer.refreshItems(); });
+        var result = legacy(fetcher, identity, host, function () { return instance.itemsContainer.refreshItems(); });
+        rememberListSession(host, active);
+        return result;
     }
 
     function scrollTo(host) {

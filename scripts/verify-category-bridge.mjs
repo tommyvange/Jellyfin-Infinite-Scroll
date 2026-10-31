@@ -15,6 +15,7 @@ const identifier = '[A-Za-z_$][\\w$]*';
 function createBoundary(config) {
     const frames = [];
     const observers = [];
+    const windowEvents = new Map();
     class Element {
         constructor(className = '') {
             this.className = className;
@@ -100,7 +101,12 @@ function createBoundary(config) {
         // A different globally selected server must not replace the native
         // category controller's authenticated ServerConnections client.
         ApiClient: { getCurrentUserId: () => 'other-server-user' },
-        innerHeight: 800, addEventListener() {}, scrollTo() {},
+        innerHeight: 800,
+        addEventListener(name, callback) {
+            if (!windowEvents.has(name)) windowEvents.set(name, []);
+            windowEvents.get(name).push(callback);
+        },
+        scrollTo() {},
         requestAnimationFrame: callback => frames.push(callback), setTimeout() {},
         MutationObserver: class { observe() {} },
         IntersectionObserver: class {
@@ -110,6 +116,10 @@ function createBoundary(config) {
     };
     return {
         window, view, items, pager, next, actions,
+        navigate(href, event = 'hashchange') {
+            window.location.href = href;
+            windowEvents.get(event)?.forEach(callback => callback({}));
+        },
         get sentinel() { return view.querySelector('.jellyfin-infinite-scroll-sentinel'); },
         frames() {
             let count = 0;
@@ -144,7 +154,7 @@ function nativeFactory(source, context) {
     return candidates[0];
 }
 
-function createController(source, runtimeSource, config = {}, { runtime = true, olderRuntime = false, item, params, sort } = {}) {
+function createController(source, runtimeSource, config = {}, { runtime = true, olderRuntime = false, item, params, sort, recordCount = 225 } = {}) {
     const boundary = createBoundary(config);
     const context = vm.createContext({ window: boundary.window, document: boundary.window.document, DOMException, console });
     if (runtime) vm.runInContext(runtimeSource, context);
@@ -155,7 +165,8 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
     const itemRequests = [];
     const rendered = [];
     const playback = [];
-    const records = Array.from({ length: 225 }, (_unused, index) => ({ Id: `movie-${index}`, Name: `Movie ${index}` }));
+    const resumes = [];
+    const records = Array.from({ length: recordCount }, (_unused, index) => ({ Id: `movie-${index}`, Name: `Movie ${index}` }));
     const state = {
         sort: sort ?? { sortBy: 'SortName', sortOrder: 'Ascending' },
         filters: { IsFavorite: true }, alphabet: 'A',
@@ -179,7 +190,13 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
     function response(method, userId, query) {
         requests.push({ method, userId, query: normalize(query) });
         const offset = query.StartIndex ?? 0;
-        return { Items: records.slice(offset, offset + (query.Limit ?? records.length)), TotalRecordCount: records.length, StartIndex: offset };
+        const result = { Items: records.slice(offset, offset + (query.Limit ?? records.length)), TotalRecordCount: records.length, StartIndex: offset };
+        if (method === 'getItems' && state.nextItemsResponse) {
+            const responseGate = state.nextItemsResponse;
+            state.nextItemsResponse = null;
+            return responseGate.then(() => result);
+        }
+        return result;
     }
     const imports = new Map();
     const requireName = text.match(new RegExp(`^function\\(${identifier},${identifier},(${identifier})\\)`))?.[1];
@@ -259,11 +276,15 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
     boundary.items.refreshItems = async () => {
         result = await boundary.items.fetchData();
         boundary.items.getItemsHtml(result.Items);
+        boundary.items.needsRefresh = false;
         return result;
     };
-    boundary.items.resume = () => boundary.items.refreshItems();
+    boundary.items.resume = options => {
+        resumes.push(normalize(options));
+        return options.refresh || boundary.items.needsRefresh ? boundary.items.refreshItems() : Promise.resolve();
+    };
     boundary.items.pause = () => {};
-    return { boundary, instance, state, requests, itemRequests, rendered, playback, records,
+    return { boundary, instance, state, requests, itemRequests, rendered, playback, records, resumes,
         get result() { return result; }, fetch: boundary.items.refreshItems };
 }
 
@@ -390,6 +411,66 @@ async function exercisePlayback(source, runtimeSource) {
     console.log('PASS: actual native play, queue, and shuffle requests keep their 300-item limits and do not change the infinite-scroll session.');
 }
 
+async function exerciseRestoredView(source, runtimeSource) {
+    const h = createController(source, runtimeSource, { batchSize: 7 });
+    const categoryRoute = h.boundary.window.location.href;
+    h.boundary.view.dispatch('viewshow', { isRestored: false });
+    await h.boundary.settle();
+    h.boundary.intersect();
+    await h.boundary.settle();
+    assert.equal(h.result.Items.length, 14);
+    const cachedResult = h.result;
+    h.boundary.view.dispatch('viewhide');
+    h.boundary.navigate('https://jellyfin.example/web/#/details?id=movie-1');
+    assert.equal(h.boundary.sentinel, null);
+    h.boundary.navigate(categoryRoute, 'popstate');
+    h.boundary.view.dispatch('viewshow', { isRestored: true });
+    await h.boundary.settle();
+    assert.deepEqual(h.resumes.at(-1), { refresh: false }, 'Actual restored view requests native cached content');
+    assert.equal(h.requests.length, 2, 'Native resume(false) does not fetch the first page again');
+    assert.strictEqual(h.result, cachedResult, 'Already rendered accumulated cards survive returning from details');
+    assert.ok(h.boundary.sentinel, 'Restored cached category view reattaches infinite scrolling');
+    assert.equal(h.boundary.pager.hidden, true);
+    h.boundary.intersect();
+    await h.boundary.settle();
+    assert.deepEqual(h.requests.map(request => request.query.StartIndex), [0, 7, 14]);
+    assert.equal(h.result.Items.length, 21);
+    h.boundary.view.dispatch('viewdestroy');
+    assert.equal(h.boundary.sentinel, null);
+    assert.equal(h.boundary.pager.hidden, false);
+    console.log('PASS: actual native restored viewshow + resume(false) keeps cached cards and resumes loading at the next offset; destroying the view removes its sentinel.');
+}
+
+async function exerciseAbandonedFinalBatch(source, runtimeSource) {
+    const h = createController(source, runtimeSource, {}, { recordCount: 150 });
+    const categoryRoute = h.boundary.window.location.href;
+    h.boundary.view.dispatch('viewshow', { isRestored: false });
+    await h.boundary.settle();
+    assert.equal(h.result.Items.length, 100);
+    let releaseResponse;
+    h.state.nextItemsResponse = new Promise(resolve => { releaseResponse = resolve; });
+    h.boundary.intersect();
+    await h.boundary.settle();
+    assert.equal(h.requests.at(-1).query.StartIndex, 100);
+    h.boundary.view.dispatch('viewhide');
+    h.boundary.navigate('https://jellyfin.example/web/#/details?id=movie-1');
+    releaseResponse();
+    await h.boundary.settle();
+    assert.equal(h.result.Items.length, 100, 'Native cached cards were not rendered after leaving the category');
+    h.boundary.navigate(categoryRoute, 'popstate');
+    h.boundary.view.dispatch('viewshow', { isRestored: true });
+    await h.boundary.settle();
+    assert.equal(h.requests.length, 2, 'Restoring cached native cards does not refetch');
+    assert.doesNotMatch(h.boundary.sentinel.textContent, /All items loaded/);
+    h.boundary.intersect();
+    await h.boundary.settle();
+    assert.deepEqual(h.requests.map(request => request.query.StartIndex), [0, 100, 100]);
+    assert.deepEqual(Array.from(h.result.Items, item => item.Id), h.records.map(item => item.Id));
+    assert.equal(h.rendered.at(-1).items.length, 150);
+    assert.equal(h.boundary.sentinel.textContent, 'All items loaded.');
+    console.log('PASS: a final batch resolved while away cannot exhaust cached category cards; returning retries the unrendered offset and renders all 150 cards once.');
+}
+
 async function main() {
     const files = await readdir(fixtureDirectory);
     const candidates = [];
@@ -409,6 +490,8 @@ async function main() {
     await exerciseFallback(source, runtimeSource, {}, { item: { Id: 'folder-1', Type: 'Folder' } }, 'Non-category folder list');
     await exerciseOtherCategories(source, runtimeSource);
     await exercisePlayback(source, runtimeSource);
+    await exerciseRestoredView(source, runtimeSource);
+    await exerciseAbandonedFinalBatch(source, runtimeSource);
     console.log(`PASS: production category bridge ${name}.`);
 }
 
