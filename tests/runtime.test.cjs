@@ -1176,3 +1176,56 @@ test('an append resolved while away cannot exhaust a restored category whose cac
     assert.deepEqual(ids(result), records.map(item => item.Id));
     assert.equal(h.sentinel.textContent, 'All items loaded.');
 });
+
+test('category render hooks preserve native callback contracts and release only their own callbacks on destroy', async () => {
+    for (const replacedByAnotherOwner of [false, true]) {
+        const h = createHarness();
+        const list = categoryList(h);
+        const calls = [];
+        const nativeRender = function (...args) { calls.push({ kind: 'render', receiver: this, args }); return 'native card markup'; };
+        const nativeAfter = function (...args) { calls.push({ kind: 'after', receiver: this, args }); return 'native after result'; };
+        h.host.getItemsHtml = nativeRender;
+        h.host.afterRefresh = nativeAfter;
+        await list.fetch();
+        assert.notStrictEqual(h.host.getItemsHtml, nativeRender, 'category adapter observes the actual render boundary');
+        assert.notStrictEqual(h.host.afterRefresh, nativeAfter);
+        const extra = { nativeArgument: true };
+        assert.equal(h.host.getItemsHtml(list.result.Items, extra), 'native card markup');
+        assert.equal(h.host.afterRefresh(list.result, extra), 'native after result');
+        assert.deepEqual(calls.map(call => call.kind), ['render', 'after']);
+        assert.ok(calls.every(call => call.receiver === h.host));
+        assert.strictEqual(calls[0].args[0], list.result.Items);
+        assert.strictEqual(calls[1].args[0], list.result);
+        assert.ok(calls.every(call => call.args[1] === extra));
+        const newerRender = () => 'new owner';
+        if (replacedByAnotherOwner) h.host.getItemsHtml = newerRender;
+        list.page.listeners.get('viewdestroy')({ detail: {} });
+        assert.strictEqual(h.host.getItemsHtml, replacedByAnotherOwner ? newerRender : nativeRender);
+        assert.strictEqual(h.host.afterRefresh, nativeAfter);
+    }
+});
+
+test('an older category host cannot restore or destroy the active session now displayed by another host', async () => {
+    const h = createHarness({ batchSize: 7 });
+    const older = categoryList(h);
+    await older.fetch();
+    h.frames();
+    const newerContainer = new h.Element('div', 'itemsContainer vertical-wrap');
+    h.document.body.appendChild(newerContainer);
+    const newer = categoryList({ ...h, host: newerContainer });
+    await newer.fetch();
+    h.frames();
+    assert.strictEqual(h.sentinel.previousElementSibling, newerContainer);
+    older.page.listeners.get('viewshow')({ detail: { isRestored: true } });
+    h.frames();
+    assert.strictEqual(h.sentinel.previousElementSibling, newerContainer, 'stale host cannot reactivate a shared session owned by the new host');
+    older.page.listeners.get('viewdestroy')({ detail: {} });
+    h.frames();
+    assert.ok(h.sentinel, 'destroying the stale host leaves the current loader attached');
+    assert.strictEqual(h.sentinel.previousElementSibling, newerContainer);
+    assert.equal(newer.pager.hidden, true);
+    h.intersect();
+    await h.settle();
+    assert.deepEqual(newer.requests.map(query => query.StartIndex), [0, 7]);
+    assert.equal(newer.result.Items.length, 14);
+});

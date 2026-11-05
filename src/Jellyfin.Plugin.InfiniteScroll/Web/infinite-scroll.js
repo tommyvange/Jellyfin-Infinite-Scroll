@@ -14,6 +14,7 @@
     var observer = null;
     var sentinel = null;
     var totalCount = null;
+    var viewportInput = 0;
     var queued = false;
     var supportedViews = new Set([
         'movies', 'series', 'episodes', 'favorites', 'collections', 'playlists',
@@ -190,31 +191,169 @@
         });
     }
 
-    function rememberListSession(host, session) {
+    function captureListViewport(container) {
+        var positions = [];
+        for (var parent = container.parentElement; parent; parent = parent.parentElement) {
+            if (typeof parent.scrollTop === 'number') {
+                positions.push({ element: parent, left: parent.scrollLeft, top: parent.scrollTop });
+            }
+        }
+        var focused = window.document.activeElement;
+        var card = focused && container.contains(focused) && focused.closest('[data-id]');
+        var focus = null;
+        if (card && container.contains(card)) {
+            var path = [];
+            for (var node = focused; node !== card; node = node.parentElement) {
+                path.unshift(Array.prototype.indexOf.call(node.parentElement.children, node));
+            }
+            focus = { id: card.getAttribute('data-id'), path: path, tag: focused.tagName };
+        }
+        return {
+            left: window.scrollX || 0, top: window.scrollY || 0,
+            positions: positions, focus: focus, input: viewportInput
+        };
+    }
+
+    function restoreListViewport(container, snapshot) {
+        var focused = window.document.activeElement;
+        if (snapshot.focus && (!focused || focused === window.document.body || container.contains(focused))) {
+            var target = Array.from(container.querySelectorAll('[data-id]')).find(function (card) {
+                return card.getAttribute('data-id') === snapshot.focus.id;
+            });
+            snapshot.focus.path.forEach(function (index) { target = target && target.children[index]; });
+            if (target && target.tagName === snapshot.focus.tag && typeof target.focus === 'function') {
+                target.focus({ preventScroll: true });
+            }
+        }
+        snapshot.positions.forEach(function (position) {
+            var element = position.element;
+            if (!element.isConnected || (element.scrollLeft === position.left && element.scrollTop === position.top)) return;
+            if (typeof element.scrollTo === 'function') {
+                element.scrollTo({ left: position.left, top: position.top, behavior: 'instant' });
+            } else {
+                element.scrollLeft = position.left;
+                element.scrollTop = position.top;
+            }
+        });
+        if ((window.scrollX || 0) !== snapshot.left || (window.scrollY || 0) !== snapshot.top) {
+            window.scrollTo({ left: snapshot.left, top: snapshot.top, behavior: 'instant' });
+        }
+    }
+
+    function bindListRenderer(binding, container, host) {
+        if (!container || typeof container.getItemsHtml !== 'function') return;
+        var getItemsHtml = container.getItemsHtml;
+        var afterRefresh = container.afterRefresh;
+        var releaseScrollModes;
+        function release() {
+            if (releaseScrollModes) releaseScrollModes();
+            releaseScrollModes = null;
+        }
+        function current(record) {
+            return record && active === record.session && binding.session === record.session &&
+                record.session.host === host &&
+                record.session.generation === record.generation && record.session.route === window.location.href && visible(host);
+        }
+        function render(items) {
+            release();
+            binding.snapshot = null;
+            var html = getItemsHtml.apply(this, arguments);
+            var record = binding.renderResult;
+            if (current(record) && record.append && record.result.Items === items) {
+                // Capture at render time, after any scrolling during the request.
+                binding.snapshot = { record: record, viewport: captureListViewport(container) };
+                // Native TV focus queues scrollManager work. Its custom-scroll
+                // marker prevents that work from starting a smooth animation.
+                var modes = ['data-scroll-mode-x', 'data-scroll-mode-y'].map(function (name) {
+                    var previous = container.getAttribute(name);
+                    container.setAttribute(name, 'custom');
+                    return { name: name, previous: previous };
+                });
+                releaseScrollModes = function () {
+                    modes.forEach(function (mode) {
+                        if (container.getAttribute(mode.name) !== 'custom') return;
+                        if (mode.previous === null) container.removeAttribute(mode.name);
+                        else container.setAttribute(mode.name, mode.previous);
+                    });
+                };
+            }
+            return html;
+        }
+        function rendered(result) {
+            var snapshot = binding.snapshot;
+            binding.snapshot = null;
+            if (binding.renderResult && binding.renderResult.result === result) binding.renderResult = null;
+            try {
+                if (typeof afterRefresh === 'function') return afterRefresh.apply(this, arguments);
+            } finally {
+                // Native rendering can autofocus the first card after replacing
+                // nested links without data-id. Restore focus and scroll before paint.
+                if (snapshot) {
+                    var accepted = snapshot.record.result === result && current(snapshot.record);
+                    var releaseRenderedScrollModes = releaseScrollModes;
+                    try {
+                        if (accepted) restoreListViewport(container, snapshot.viewport);
+                    } finally {
+                        // Keep the markers until queued native focus tasks finish.
+                        // Always clean up, even if navigation or user input took over.
+                        window.setTimeout(function () {
+                            try {
+                                if (accepted && viewportInput === snapshot.viewport.input && current(snapshot.record)) {
+                                    restoreListViewport(container, snapshot.viewport);
+                                }
+                            } finally {
+                                if (releaseScrollModes === releaseRenderedScrollModes) release();
+                            }
+                        }, 0);
+                    }
+                }
+            }
+        }
+        container.getItemsHtml = render;
+        container.afterRefresh = rendered;
+        binding.disposeRenderer = function () {
+            // A view can be destroyed by afterRefresh, after native TV focus has
+            // queued work. Keep its markers until those already queued tasks run.
+            var releaseDestroyedScrollModes = releaseScrollModes;
+            if (releaseDestroyedScrollModes) window.setTimeout(function () {
+                if (releaseScrollModes === releaseDestroyedScrollModes) release();
+            }, 0);
+            if (container.getItemsHtml === render) container.getItemsHtml = getItemsHtml;
+            if (container.afterRefresh === rendered) container.afterRefresh = afterRefresh;
+        };
+    }
+
+    function rememberListSession(host, session, container) {
         var binding = listBindings.get(host);
         if (!binding) {
             if (!session) return;
             binding = { session: null };
             listBindings.set(host, binding);
+            bindListRenderer(binding, container, host);
             // Returning from details resumes cached cards without another fetch.
             // Reattach the loader to that saved result, retaining its raw offset.
             host.addEventListener('viewshow', function () {
                 var restored = binding.session;
-                if (restored && restored.route === window.location.href && visible(host)) {
+                if (restored && restored.host === host && restored.route === window.location.href && visible(host)) {
                     active = restored;
                     schedule();
                 }
             });
             host.addEventListener('viewdestroy', function () {
-                if (active && active === binding.session) {
+                if (active && active === binding.session && active.host === host) {
                     active = null;
                     detach();
                 }
                 binding.session = null;
+                binding.renderResult = null;
+                binding.snapshot = null;
+                if (binding.disposeRenderer) binding.disposeRenderer();
                 listBindings.delete(host);
             });
         }
         binding.session = session;
+        binding.renderResult = null;
+        return binding;
     }
 
     // Category links in both layouts open the shared Legacy list controller.
@@ -239,9 +378,19 @@
             params: params, item: { Id: item.Id, Type: item.Type }
         });
         var result = legacy(fetcher, identity, host, function () { return instance.itemsContainer.refreshItems(); });
-        if (active) active.showTotal = true;
-        rememberListSession(host, active);
-        return result;
+        var session = active;
+        var generation = session && session.generation;
+        if (session) session.showTotal = true;
+        var binding = rememberListSession(host, session, instance.itemsContainer);
+        if (!session || !binding) return result;
+        return result.then(function (response) {
+            if (active === session && session.generation === generation && session.route === window.location.href) {
+                binding.renderResult = {
+                    session: session, generation: generation, result: response, append: session.preserveScroll
+                };
+            }
+            return response;
+        });
     }
 
     function scrollTo(host) {
@@ -406,6 +555,9 @@
     window.addEventListener('hashchange', navigated);
     window.addEventListener('popstate', navigated);
     window.addEventListener('pagehide', navigated);
+    ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'pointermove', 'keydown'].forEach(function (event) {
+        window.addEventListener(event, function () { viewportInput++; }, { capture: true, passive: true });
+    });
     function start() {
         var style = window.document.createElement('style');
         style.textContent = '[data-jellyfin-infinite-scroll-paging]{display:none!important}';

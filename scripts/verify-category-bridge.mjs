@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 /** Execute the transformed, shipped list controller used by category results.
+ * Its bundled native ItemsContainer renderer performs the actual replacement,
+ * focus, and lifecycle flow; DOM geometry/focus effects and API I/O are modeled.
  * Run tests/Transformations over the upstream list chunk before this script.
  * Fixtures stay in .research and are not redistributed with the plugin.
  */
@@ -14,10 +16,25 @@ const identifier = '[A-Za-z_$][\\w$]*';
 
 function createBoundary(config) {
     const frames = [];
+    const zeroTimers = [];
     const observers = [];
     const windowEvents = new Map();
+    const focusEvents = [];
+    const nativeFocus = { tv: false, animationsStarted: 0, blocked: 0, queuedPositions: [], afterFocusTask: null };
+    function scrollParent(element, axis) {
+        for (let parent = element.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+            if (parent.getAttribute(`data-scroll-mode-${axis}`) === 'custom') return parent;
+            const style = window.getComputedStyle(parent);
+            const overflow = style[axis === 'x' ? 'overflowX' : 'overflowY'];
+            const size = parent[axis === 'x' ? 'scrollWidth' : 'scrollHeight'];
+            const client = parent[axis === 'x' ? 'clientWidth' : 'clientHeight'];
+            if (overflow === 'scroll' || (overflow === 'auto' && size > client)) return parent;
+        }
+        return document.scrollingElement;
+    }
     class Element {
-        constructor(className = '') {
+        constructor(className = '', tagName = 'DIV') {
+            this.tagName = tagName;
             this.className = className;
             this.children = [];
             this.parentNode = null;
@@ -26,12 +43,20 @@ function createBoundary(config) {
             this.attributes = new Map();
             this.listeners = new Map();
             this.ownText = '';
+            this.scrollTop = 0;
+            this.scrollLeft = 0;
+            this.clientHeight = 800;
+            this.clientWidth = 1000;
+            this.scrollHeight = 50000;
+            this.scrollWidth = 2000;
             this.classList = {
                 add: (...names) => { this.className = [...new Set([...this.className.split(/\s+/), ...names])].join(' '); },
-                remove: (...names) => { this.className = this.className.split(/\s+/).filter(name => !names.includes(name)).join(' '); }
+                remove: (...names) => { this.className = this.className.split(/\s+/).filter(name => !names.includes(name)).join(' '); },
+                contains: name => this.className.split(/\s+/).includes(name)
             };
         }
-        get isConnected() { return this === document.body || Boolean(this.parentNode?.isConnected); }
+        get isConnected() { return this === document.documentElement || this === document.body || Boolean(this.parentNode?.isConnected); }
+        get parentElement() { return this.parentNode; }
         get previousElementSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) - 1] ?? null; }
         get textContent() { return this.ownText + this.children.map(child => child.textContent).join(''); }
         set textContent(value) {
@@ -39,13 +64,32 @@ function createBoundary(config) {
             this.children = [];
             this.ownText = String(value);
         }
+        get innerHTML() { return this.html ?? ''; }
+        set innerHTML(value) {
+            this.html = String(value);
+            if (!this.classList.contains('itemsContainer')) return;
+            this.replacements = (this.replacements ?? 0) + 1;
+            if (this.contains(document.activeElement)) document.activeElement = document.body;
+            this.children.forEach(child => { child.parentNode = null; });
+            this.children = [];
+            // Preserve the relevant structure of native cardBuilder output:
+            // the outer card carries data-id; its focusable image link does not.
+            for (const [index, match] of [...this.html.matchAll(/data-id="([^"]+)"/g)].entries()) {
+                const card = this.appendChild(new Element('card', 'DIV'));
+                card.setAttribute('data-id', match[1]);
+                card._top = index * 250;
+                const link = card.appendChild(new Element('cardImageContainer cardContent itemAction', 'A'));
+                link._top = card._top;
+            }
+        }
         matches(selector) {
             return selector.split(',').some(part => {
                 part = part.trim();
                 if (part.startsWith('.')) return part.slice(1).split('.').every(name => this.className.split(/\s+/).includes(name));
                 if (part === '[hidden]') return this.hidden;
-                const attribute = part.match(/^\[([^\]]+)\]$/);
-                return attribute ? this.hasAttribute(attribute[1]) : false;
+                const attribute = part.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
+                return attribute ? this.hasAttribute(attribute[1]) &&
+                    (attribute[2] === undefined || this.getAttribute(attribute[1]) === attribute[2]) : this.tagName.toLowerCase() === part.toLowerCase();
             });
         }
         querySelectorAll(selector) {
@@ -58,12 +102,62 @@ function createBoundary(config) {
             for (let node = this; node; node = node.parentNode) if (node.matches(selector)) return node;
             return null;
         }
+        contains(element) {
+            for (let node = element; node; node = node.parentNode) if (node === this) return true;
+            return false;
+        }
+        focus(options = {}) {
+            const changed = document.activeElement !== this;
+            document.activeElement = this;
+            focusEvents.push({ element: this, preventScroll: options.preventScroll === true });
+            if (!options.preventScroll) {
+                document.scrollingElement.scrollLeft = this._left ?? 0;
+                document.scrollingElement.scrollTop = this._top ?? 0;
+                view.scrollLeft = this._left ?? 0;
+                view.scrollTop = this._top ?? 0;
+            }
+            if (nativeFocus.tv && changed) {
+                // Jellyfin's TV scrollManager reacts to focus in a later task.
+                // Its custom-ancestor early return precedes the 270ms RAF loop.
+                zeroTimers.push(() => {
+                    const xScroller = scrollParent(this, 'x');
+                    const yScroller = scrollParent(this, 'y');
+                    const customX = xScroller.getAttribute('data-scroll-mode-x') === 'custom';
+                    const customY = yScroller.getAttribute('data-scroll-mode-y') === 'custom';
+                    if ((xScroller === yScroller && (customX || customY)) || (customX && customY)) {
+                        nativeFocus.blocked++;
+                    } else {
+                        nativeFocus.animationsStarted++;
+                        const startX = xScroller.scrollLeft;
+                        const startY = yScroller.scrollTop;
+                        let frame = 0;
+                        const animate = () => {
+                            const progress = ++frame / 5;
+                            xScroller.scrollLeft = startX + ((this._left ?? 0) - startX) * progress;
+                            yScroller.scrollTop = startY + (Math.max(0, (this._top ?? 0) - 200) - startY) * progress;
+                            nativeFocus.queuedPositions.push({ windowY: window.scrollY, ancestorY: view.scrollTop });
+                            if (frame < 5) frames.push(animate);
+                        };
+                        frames.push(animate);
+                    }
+                    nativeFocus.afterFocusTask?.(this);
+                });
+            }
+        }
+        scrollTo(left, top) {
+            if (typeof left === 'object') ({ left = this.scrollLeft, top = this.scrollTop } = left);
+            this.scrollLeft = left;
+            this.scrollTop = top;
+        }
         setAttribute(name, value) { this.attributes.set(name, String(value)); }
         getAttribute(name) { return this.attributes.get(name) ?? null; }
         hasAttribute(name) { return this.attributes.has(name); }
         removeAttribute(name) { this.attributes.delete(name); }
         getClientRects() { return this.isConnected && !this.closest('.hide, [hidden]') ? [{}] : []; }
-        getBoundingClientRect() { return { top: 2000 }; }
+        getBoundingClientRect() {
+            const top = this.className.includes('sentinel') ? 2000 : (this._top ?? 0) - document.scrollingElement.scrollTop - view.scrollTop;
+            return { top, left: 0, bottom: top + 250, right: 200, width: 200, height: 250 };
+        }
         appendChild(child) { child.remove(); this.children.push(child); child.parentNode = this; return child; }
         remove() {
             if (this.parentNode) this.parentNode.children.splice(this.parentNode.children.indexOf(this), 1);
@@ -83,10 +177,14 @@ function createBoundary(config) {
         click() { this.dispatch('click'); }
     }
     const document = {
-        body: new Element(), head: new Element(),
-        createElement: () => new Element(), addEventListener() {},
-        querySelectorAll: selector => document.body.querySelectorAll(selector)
+        body: new Element('', 'BODY'), head: new Element('', 'HEAD'), documentElement: new Element('', 'HTML'),
+        createElement: name => new Element('', String(name).toUpperCase()), addEventListener() {},
+        querySelectorAll: selector => document.body.querySelectorAll(selector),
+        querySelector: selector => document.body.querySelector(selector)
     };
+    document.documentElement.appendChild(document.body);
+    document.scrollingElement = document.documentElement;
+    document.activeElement = document.body;
     const view = document.body.appendChild(new Element('page'));
     const topPager = view.appendChild(new Element('paging'));
     const items = view.appendChild(new Element('itemsContainer vertical-wrap'));
@@ -113,8 +211,14 @@ function createBoundary(config) {
             if (!windowEvents.has(name)) windowEvents.set(name, []);
             windowEvents.get(name).push(callback);
         },
-        scrollTo() {},
-        requestAnimationFrame: callback => frames.push(callback), setTimeout() {},
+        get scrollX() { return document.scrollingElement.scrollLeft; },
+        get scrollY() { return document.scrollingElement.scrollTop; },
+        get pageXOffset() { return document.scrollingElement.scrollLeft; },
+        get pageYOffset() { return document.scrollingElement.scrollTop; },
+        scrollTo: (...args) => document.scrollingElement.scrollTo(...args),
+        getComputedStyle: element => ({ overflow: element === view ? 'auto' : 'visible', overflowY: element === view ? 'auto' : 'visible', overflowX: element === view ? 'auto' : 'visible' }),
+        requestAnimationFrame: callback => frames.push(callback),
+        setTimeout(callback, delay) { if (delay === 0) zeroTimers.push(callback); return zeroTimers.length; },
         MutationObserver: class { observe() {} },
         IntersectionObserver: class {
             constructor(callback) { this.callback = callback; this.connected = true; observers.push(this); }
@@ -122,7 +226,12 @@ function createBoundary(config) {
         }
     };
     return {
-        window, view, items, pager: topPager, pagers, next, actions,
+        window, view, items, pager: topPager, pagers, next, actions, Element, focusEvents, nativeFocus,
+        focusManager: {
+            focus: element => element.focus({ preventScroll: nativeFocus.tv }),
+            autoFocus: container => container.querySelector('.cardImageContainer')?.focus({ preventScroll: nativeFocus.tv })
+        },
+        input(type = 'wheel') { windowEvents.get(type)?.forEach(callback => callback({ type })); },
         navigate(href, event = 'hashchange') {
             window.location.href = href;
             windowEvents.get(event)?.forEach(callback => callback({}));
@@ -130,11 +239,9 @@ function createBoundary(config) {
         get sentinel() { return view.querySelector('.jellyfin-infinite-scroll-sentinel'); },
         get total() { return view.querySelector('.jellyfin-infinite-scroll-total'); },
         frames() {
-            let count = 0;
-            while (frames.length) {
-                assert.ok(++count < 30, 'Unexpected category render loop');
-                frames.shift()();
-            }
+            // Newly requested frames belong to a later paint. In particular, a
+            // native smooth-scroll animation must outlast a zero-task restore.
+            frames.splice(0).forEach(callback => callback());
         },
         intersect() {
             const observer = observers.filter(observer => observer.connected).at(-1);
@@ -146,6 +253,16 @@ function createBoundary(config) {
             this.frames();
             await new Promise(resolve => setImmediate(resolve));
             this.frames();
+            let count = 0;
+            while (zeroTimers.length) {
+                assert.ok(++count < 30, 'Unexpected category timer loop');
+                zeroTimers.shift()();
+                this.frames();
+            }
+            while (frames.length) {
+                assert.ok(++count < 60, 'Unexpected category animation loop');
+                this.frames();
+            }
         }
     };
 }
@@ -159,15 +276,22 @@ function nativeFactory(source, context) {
         return text.includes('.itemsContainer.fetchData=') && text.includes('queryRecursive') && text.includes('getSettingsKey');
     });
     assert.equal(candidates.length, 1, 'Expected one native generic-list controller module');
-    return candidates[0];
+    const itemFactories = factories.filter(factory => factory.toString().includes('document.registerElement("emby-itemscontainer"'));
+    assert.equal(itemFactories.length, 1, 'Actual native ItemsContainer module is present in the category chunk');
+    return { list: candidates[0], items: itemFactories[0] };
 }
 
 function createController(source, runtimeSource, config = {}, { runtime = true, olderRuntime = false, item, params, sort, recordCount = 225 } = {}) {
     const boundary = createBoundary(config);
-    const context = vm.createContext({ window: boundary.window, document: boundary.window.document, DOMException, console });
+    const context = vm.createContext({
+        window: boundary.window, document: boundary.window.document, DOMException, console,
+        setTimeout: boundary.window.setTimeout, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+        HTMLDivElement: function () {}
+    });
+    context.HTMLDivElement.prototype = boundary.Element.prototype;
     if (runtime) vm.runInContext(runtimeSource, context);
     if (olderRuntime) delete boundary.window.JellyfinInfiniteScroll.legacyList;
-    const factory = nativeFactory(source, context);
+    const { list: factory, items: itemsFactory } = nativeFactory(source, context);
     const text = factory.toString();
     const requests = [];
     const itemRequests = [];
@@ -226,8 +350,12 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
     }
     bindUsage('getApiClient', { getApiClient(serverId) { assert.equal(serverId, 'server-1'); return api; } });
     bindUsage('translate', { translate: key => key });
-    bindUsage('getCardsHtml', { getCardsHtml(options) { rendered.push(options); return `cards:${options.items.length}`; } });
-    bindUsage('getListViewHtml', { getListViewHtml(options) { rendered.push(options); return `rows:${options.items.length}`; } });
+    const renderCards = options => {
+        rendered.push(options);
+        return options.items.map(item => `<div class="card" data-id="${item.Id}"><a class="cardImageContainer cardContent itemAction"></a></div>`).join('');
+    };
+    bindUsage('getCardsHtml', { getCardsHtml: renderCards });
+    bindUsage('getListViewHtml', { getListViewHtml: renderCards });
     bindUsage('getQueryPagingHtml', { getQueryPagingHtml: query => JSON.stringify(query) });
     bindUsage('canQueue', {
         canQueue: () => true,
@@ -236,7 +364,7 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
         shuffle: item => playback.push({ action: 'shuffle', item })
     });
     bindUsage('setTitle', { setTitle() {} });
-    bindUsage('autoFocus', { autoFocus() {}, focus() {} });
+    bindUsage('autoFocus', boundary.focusManager);
     bindUsage('show', { show() {}, hide() {} });
     bindUsage('addEventListener', { addEventListener() {}, removeEventListener() {} });
     bindUsage('Movies', new Proxy({}, { get: (_target, property) => String(property).toLowerCase() }));
@@ -269,11 +397,20 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
             on() {} off() {} destroy() {}
         }
     });
-    const require = id => imports.get(id) ?? (id === 84069 ? { default: { autoFocus() {} } } : {});
+    imports.set(76542, { Ay: { lazyChildren() {} } });
+    const require = id => imports.get(id) ?? (id === 84069 ? { default: boundary.focusManager } : {});
     require.r = exports => Object.defineProperty(exports, '__esModule', { value: true });
     require.d = (exports, getters) => {
         for (const [name, getter] of Object.entries(getters)) Object.defineProperty(exports, name, { get: getter, enumerable: true });
     };
+    let itemsPrototype;
+    boundary.window.document.registerElement = (name, options) => {
+        assert.equal(name, 'emby-itemscontainer');
+        itemsPrototype = options.prototype;
+    };
+    itemsFactory({ exports: {} }, {}, require);
+    assert.equal(typeof itemsPrototype?.refreshItems, 'function', 'Actual native refreshItems was registered');
+    Object.setPrototypeOf(boundary.items, itemsPrototype);
     const exports = {};
     factory({ exports }, exports, require);
     assert.equal(typeof exports.default, 'function', 'Native list constructor is exported');
@@ -282,19 +419,14 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
     instance.currentItem = state.item;
     instance.alphaPicker = { value: () => state.alphabet };
     let result;
-    boundary.items.refreshItems = async () => {
-        result = await boundary.items.fetchData();
-        boundary.items.getItemsHtml(result.Items);
-        boundary.items.needsRefresh = false;
-        return result;
-    };
-    boundary.items.resume = options => {
+    boundary.items.afterRefresh = value => { result = value; state.afterRefresh?.(value); };
+    const nativeResume = boundary.items.resume;
+    boundary.items.resume = function (options) {
         resumes.push(normalize(options));
-        return options.refresh || boundary.items.needsRefresh ? boundary.items.refreshItems() : Promise.resolve();
+        return nativeResume.call(this, options);
     };
-    boundary.items.pause = () => {};
     return { boundary, instance, state, requests, itemRequests, rendered, playback, records, resumes,
-        get result() { return result; }, fetch: boundary.items.refreshItems };
+        get result() { return result; }, fetch: () => boundary.items.refreshItems() };
 }
 
 async function exerciseCategory(source, runtimeSource, batchSize) {
@@ -540,6 +672,209 @@ async function exerciseCategoryCount(source, runtimeSource) {
     console.log('PASS: category header shows full total 731 above 100 loaded cards; filters, zero/unknown totals, both native pagers, and random-sort cleanup behave correctly.');
 }
 
+async function exerciseNativeRendererControl(source, runtimeSource) {
+    const h = createController(source, runtimeSource, { enabled: false });
+    await h.fetch();
+    const originalLink = h.boundary.items.querySelectorAll('.cardImageContainer')[10];
+    assert.ok(originalLink, 'Real native onDataFetched rendered focusable card links');
+    assert.equal(originalLink.getAttribute('data-id'), null, 'Native image links do not carry the outer card ID');
+    h.boundary.window.document.activeElement = originalLink;
+    h.boundary.window.scrollTo(17, 2100);
+    h.boundary.view.scrollTo(11, 1400);
+    await h.fetch();
+    assert.equal(originalLink.isConnected, false, 'Native innerHTML replacement removes the focused link');
+    assert.equal(h.boundary.items.replacements, 2);
+    assert.equal(h.boundary.window.scrollX, 0);
+    assert.equal(h.boundary.window.scrollY, 0, 'Native onDataFetched autofocus moves a nonzero document viewport');
+    assert.equal(h.boundary.view.scrollLeft, 0);
+    assert.equal(h.boundary.view.scrollTop, 0, 'Native autofocus also moves the scrollable ancestor');
+    assert.strictEqual(h.boundary.window.document.activeElement, h.boundary.items.querySelector('.cardImageContainer'));
+    assert.equal(h.boundary.focusEvents.at(-1).preventScroll, false);
+    console.log('PASS: real native ItemsContainer control reproduces the focus-driven viewport jump after replacing a focused card image link.');
+}
+
+function viewport(h) {
+    return {
+        windowX: h.boundary.window.scrollX, windowY: h.boundary.window.scrollY,
+        ancestorX: h.boundary.view.scrollLeft, ancestorY: h.boundary.view.scrollTop
+    };
+}
+
+function moveViewport(h, position) {
+    h.boundary.window.scrollTo(position.windowX, position.windowY);
+    h.boundary.view.scrollTo(position.ancestorX, position.ancestorY);
+}
+
+function focusCard(h, index) {
+    const link = h.boundary.items.querySelectorAll('.cardImageContainer')[index];
+    assert.ok(link, `Rendered card ${index} has a native-style focusable image link`);
+    h.boundary.window.document.activeElement = link;
+    return link.closest('[data-id]').getAttribute('data-id');
+}
+
+function assertFocusedCard(h, id) {
+    assert.equal(h.boundary.window.document.activeElement.closest('[data-id]')?.getAttribute('data-id'), id);
+    assert.ok(h.boundary.window.document.activeElement.isConnected);
+}
+
+async function exerciseAppendViewport(source, runtimeSource) {
+    const h = createController(source, runtimeSource);
+    moveViewport(h, { windowX: 7, windowY: 1200, ancestorX: 11, ancestorY: 1600 });
+    h.boundary.view.dispatch('viewshow', { isRestored: false });
+    await h.boundary.settle();
+    assert.equal(h.boundary.window.scrollY, 0, 'Initial native viewshow retains its autofocus behavior');
+    assert.equal(h.boundary.view.scrollTop, 0);
+    const focusedId = focusCard(h, 25);
+    moveViewport(h, { windowX: 17, windowY: 1200, ancestorX: 11, ancestorY: 1450 });
+    let releaseResponse;
+    h.state.nextItemsResponse = new Promise(resolve => { releaseResponse = resolve; });
+    h.boundary.intersect();
+    await h.boundary.settle();
+    const latest = { windowX: 23, windowY: 1840, ancestorX: 31, ancestorY: 2480 };
+    moveViewport(h, latest);
+    const focusCount = h.boundary.focusEvents.length;
+    releaseResponse();
+    await h.boundary.settle();
+    assert.equal(h.result.Items.length, 200);
+    assert.deepEqual(viewport(h), latest, 'Append preserves the latest viewport after scrolling during the request');
+    assertFocusedCard(h, focusedId);
+    assert.ok(h.boundary.focusEvents.slice(focusCount).some(event => !event.preventScroll), 'Real native renderer attempted its autofocus jump');
+    assert.ok(h.boundary.focusEvents.slice(focusCount).some(event => event.preventScroll), 'Restored focus does not move the viewport again');
+
+    const failedFocusId = focusCard(h, 35);
+    let rejectResponse;
+    h.state.nextItemsResponse = new Promise((_resolve, reject) => { rejectResponse = reject; });
+    h.boundary.intersect();
+    await h.boundary.settle();
+    const afterFailure = { windowX: 39, windowY: 3500, ancestorX: 52, ancestorY: 4600 };
+    moveViewport(h, afterFailure);
+    rejectResponse(new Error('Append connection failed'));
+    await h.boundary.settle();
+    assert.equal(h.result.Items.length, 200);
+    assert.deepEqual(viewport(h), afterFailure, 'Failed append rerender preserves the current viewport');
+    assertFocusedCard(h, failedFocusId);
+    assert.match(h.boundary.sentinel.textContent, /Could not load more items/);
+    const retryPosition = { windowX: 45, windowY: 4100, ancestorX: 63, ancestorY: 5100 };
+    moveViewport(h, retryPosition);
+    h.boundary.sentinel.querySelector('BUTTON').click();
+    await h.boundary.settle();
+    assert.deepEqual(h.requests.map(request => request.query.StartIndex), [0, 100, 200, 200]);
+    assert.equal(h.result.Items.length, 225);
+    assert.deepEqual(viewport(h), retryPosition, 'Explicit retry preserves the viewport');
+    assertFocusedCard(h, failedFocusId);
+
+    h.state.filters = { IsUnplayed: true };
+    await h.fetch();
+    await h.boundary.settle();
+    assert.equal(h.result.Items.length, 100);
+    assert.equal(h.boundary.window.scrollY, 0, 'Normal filter refresh keeps native focus/scroll behavior');
+    assert.equal(h.boundary.view.scrollTop, 0);
+    const outsideFocus = h.boundary.actions.play;
+    h.boundary.window.document.activeElement = outsideFocus;
+    const outsidePosition = { windowX: 19, windowY: 2120, ancestorX: 28, ancestorY: 3100 };
+    moveViewport(h, outsidePosition);
+    h.boundary.intersect();
+    await h.boundary.settle();
+    assert.deepEqual(viewport(h), outsidePosition);
+    assert.strictEqual(h.boundary.window.document.activeElement, outsideFocus, 'Appending does not steal focus from outside the cards');
+    console.log('PASS: actual native renderer preserves current window/ancestor positions and card focus for append, failure, and retry; initial/filter refreshes keep native behavior.');
+}
+
+async function exerciseAppendNavigation(source, runtimeSource) {
+    for (const cancellation of ['navigation', 'destroy']) {
+        const h = createController(source, runtimeSource);
+        h.boundary.view.dispatch('viewshow', { isRestored: false });
+        await h.boundary.settle();
+        focusCard(h, 25);
+        const beforeAppend = { windowX: 13, windowY: 2600, ancestorX: 22, ancestorY: 3700 };
+        moveViewport(h, beforeAppend);
+        h.boundary.nativeFocus.tv = true;
+        const destination = { windowX: 5, windowY: 543, ancestorX: 7, ancestorY: 654 };
+        h.state.afterRefresh = result => {
+            if (result.Items.length > 100) {
+                if (cancellation === 'navigation') h.boundary.navigate('https://jellyfin.example/web/#/details?id=movie-1');
+                else h.boundary.view.dispatch('viewdestroy');
+                h.boundary.window.document.activeElement = h.boundary.window.document.body;
+                moveViewport(h, destination);
+            }
+        };
+        h.boundary.intersect();
+        await h.boundary.settle();
+        assert.equal(h.result.Items.length, 200);
+        assert.deepEqual(viewport(h), destination, `${cancellation} inside native afterRefresh prevents restoring the previous page viewport`);
+        assert.strictEqual(h.boundary.window.document.activeElement, h.boundary.window.document.body);
+        assert.equal(h.boundary.nativeFocus.animationsStarted, 0, 'Already queued TV focus remains blocked through navigation/destruction');
+        assert.ok(h.boundary.nativeFocus.blocked > 0);
+        assert.equal(h.boundary.items.getAttribute('data-scroll-mode-x'), null);
+        assert.equal(h.boundary.items.getAttribute('data-scroll-mode-y'), null);
+    }
+    console.log('PASS: navigation/destruction inside native afterRefresh prevents stale viewport restoration, blocks prequeued TV focus, and releases temporary modes.');
+}
+
+async function exerciseQueuedFocusViewport(source, runtimeSource) {
+    const h = createController(source, runtimeSource);
+    h.boundary.nativeFocus.tv = true;
+    moveViewport(h, { windowX: 12, windowY: 1300, ancestorX: 24, ancestorY: 2400 });
+    h.boundary.view.dispatch('viewshow', { isRestored: false });
+    await h.boundary.settle();
+    assert.ok(h.boundary.nativeFocus.animationsStarted > 0, 'Initial native TV focus can start its smooth animation');
+    const initialAnimations = h.boundary.nativeFocus.animationsStarted;
+    const focusedId = focusCard(h, 25);
+    const current = { windowX: 21, windowY: 1930, ancestorX: 32, ancestorY: 2850 };
+    moveViewport(h, current);
+    h.boundary.items.setAttribute('data-scroll-mode-x', 'center');
+    h.boundary.items.setAttribute('data-scroll-mode-y', 'nearest');
+    let markedDuringRender = false;
+    h.state.afterRefresh = result => {
+        if (result.Items.length > 100) {
+            markedDuringRender = true;
+            assert.equal(h.boundary.items.getAttribute('data-scroll-mode-x'), 'custom');
+            assert.equal(h.boundary.items.getAttribute('data-scroll-mode-y'), 'custom');
+        }
+    };
+    h.boundary.intersect();
+    await h.boundary.settle();
+    assert.ok(markedDuringRender);
+    assert.ok(h.boundary.nativeFocus.blocked >= 2, 'Both native and restored focus tasks see a custom ancestor');
+    assert.equal(h.boundary.nativeFocus.animationsStarted, initialAnimations, 'Append never starts a native smooth-scroll animation');
+    assert.deepEqual(viewport(h), current);
+    assertFocusedCard(h, focusedId);
+    assert.equal(h.boundary.items.getAttribute('data-scroll-mode-x'), 'center');
+    assert.equal(h.boundary.items.getAttribute('data-scroll-mode-y'), 'nearest');
+    h.state.filters = { IsUnplayed: true };
+    await h.fetch();
+    await h.boundary.settle();
+    assert.ok(h.boundary.nativeFocus.animationsStarted > initialAnimations, 'Normal filter refresh still permits native smooth scrolling');
+
+    for (const cancellation of ['input', 'navigation', 'destroy', 'new-owner']) {
+        const target = createController(source, runtimeSource);
+        target.boundary.view.dispatch('viewshow', { isRestored: false });
+        await target.boundary.settle();
+        const id = focusCard(target, 35);
+        moveViewport(target, current);
+        target.boundary.nativeFocus.tv = true;
+        const destination = { windowX: 43, windowY: 4210, ancestorX: 54, ancestorY: 5320 };
+        let cancelled = false;
+        target.boundary.nativeFocus.afterFocusTask = element => {
+            if (cancelled || element.closest('[data-id]')?.getAttribute('data-id') !== id) return;
+            cancelled = true;
+            if (cancellation === 'input') target.boundary.input('wheel');
+            else if (cancellation === 'navigation') target.boundary.navigate('https://jellyfin.example/web/#/details?id=movie-1');
+            else if (cancellation === 'destroy') target.boundary.view.dispatch('viewdestroy');
+            else target.boundary.items.setAttribute('data-scroll-mode-x', 'new-owner-mode');
+            if (cancellation !== 'new-owner') moveViewport(target, destination);
+        };
+        target.boundary.intersect();
+        await target.boundary.settle();
+        assert.ok(cancelled, 'Cancellation occurred after queued native focus tasks and before cleanup');
+        assert.equal(target.boundary.nativeFocus.animationsStarted, 0);
+        assert.equal(target.boundary.items.getAttribute('data-scroll-mode-x'), cancellation === 'new-owner' ? 'new-owner-mode' : null);
+        assert.equal(target.boundary.items.getAttribute('data-scroll-mode-y'), null, 'Temporary scroll markers are always released');
+        if (cancellation !== 'new-owner') assert.deepEqual(viewport(target), destination, `${cancellation} cancels stale viewport restoration while still cleaning up`);
+    }
+    console.log('PASS: append focus cannot start native TV smooth animation; initial/filter focus remains native, scroll-mode attributes are restored, and input/navigation/destroy cleanup is unconditional.');
+}
+
 async function main() {
     const files = await readdir(fixtureDirectory);
     const candidates = [];
@@ -562,6 +897,10 @@ async function main() {
     await exerciseRestoredView(source, runtimeSource);
     await exerciseAbandonedFinalBatch(source, runtimeSource);
     await exerciseCategoryCount(source, runtimeSource);
+    await exerciseNativeRendererControl(source, runtimeSource);
+    await exerciseAppendViewport(source, runtimeSource);
+    await exerciseAppendNavigation(source, runtimeSource);
+    await exerciseQueuedFocusViewport(source, runtimeSource);
     console.log(`PASS: production category bridge ${name}.`);
 }
 
