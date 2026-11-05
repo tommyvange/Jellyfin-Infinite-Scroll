@@ -1,64 +1,91 @@
 # Jellyfin Infinite Scroll
 
 [![Build and test](https://github.com/tommyvange/Jellyfin-Infinite-Scroll/actions/workflows/build.yml/badge.svg)](https://github.com/tommyvange/Jellyfin-Infinite-Scroll/actions/workflows/build.yml)
+[![Stars](https://img.shields.io/github/stars/tommyvange/Jellyfin-Infinite-Scroll)](https://github.com/tommyvange/Jellyfin-Infinite-Scroll/stargazers)
+[![Latest release](https://img.shields.io/github/v/release/tommyvange/Jellyfin-Infinite-Scroll)](https://github.com/tommyvange/Jellyfin-Infinite-Scroll/releases/latest)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-A Jellyfin server plugin that replaces paging with lazy loading in the **server-hosted Jellyfin Web client**. Scroll toward the bottom of a library and the next batch appears in the same list. The default batch size is **100**, configurable from **1 to 1000** in the plugin settings.
+![Infinite Scroll](assets/Jellyfin-Infinite-Scroll.png)
 
-The status messages are configurable too. **Loading more items…** appears while a batch is loading, and **All items loaded.** appears at the end. Enter your own plain text or leave either setting blank to hide its text. Existing configurations keep these defaults when upgrading.
+Replace paging with infinite scrolling in the server-hosted Jellyfin Web client. Scroll toward the bottom of a library to load the next batch into the same list, with Jellyfin's native cards, filters, sorting, selection, and item actions.
 
-The implementation targets Jellyfin **12.0 and newer**. CI verifies the minimum supported version and the **latest stable Jellyfin release**, resolved from official release metadata on every run. The current production checks pass for **12.0 and 12.4** (31 October 2026). If Jellyfin changes an integration point, its asset is left intact and CI reports the incompatibility. Future major releases are checked automatically, but support depends on their server API, framework and web integration remaining compatible.
+The default batch size is **100**, configurable from **1 to 1000**. Loading and completion messages are configurable too.
 
-## Supported views
+## Requirements
 
-- **Modern layout:** Movies, Shows, Episodes, Favorites, Collections, Playlists, Albums, Artists, Album Artists, Songs, Studios/Networks, Books, Authors, Photos, Photo Albums, Videos, Music Videos, Mixed Media, and Folders, using their native ItemsView queries.
-- **Legacy layout:** Movies and Shows, including the Movies controller's Favorites mode and its card/list layouts.
-- **Category results in both layouts:** Movies → Categories → Comedy and other genre results, plus the shared list page's music genre, studio, and person results. These pages use the configured batch size and status messages too.
-- The category toolbar shows the server's total for the current filters, such as **731**, while the page range and pagination arrows are hidden. The count stays the same as more items load and updates when the filtered total changes.
-- Jellyfin's native cards, item actions, selection, filters, alphabet picker, image loading, and sort order are retained. Modern paging arrows are removed and the toolbar shows the total item count. Legacy library paging is hidden while scrolling is active.
-- Requests load one batch at a time, stop at the server's total, and retain existing items when an appended request fails. A Retry button repeats the failed offset. Filters and ordinary refreshes start a new result set.
+- **Jellyfin 12.0 or newer**, using .NET 10.
+- **File Transformation 3.x**, built for your Jellyfin version.
+- The **server-hosted Jellyfin Web client**, in either Modern or Legacy layout.
 
-Horizontal suggestion and genre preview rows, Live TV, and other views that do not use the supported paged library queries keep their normal behavior. **Random sort retains native paging** because Jellyfin generates a new random order for every request; offset paging cannot guarantee a complete, stable random list. This plugin does not virtualize the DOM: visited items remain mounted until the library is reset.
-
-Native Android TV, Swiftfin, and other clients that render their own UI are outside this extension's scope. Separately hosted web clients do not pass through this server's File Transformation middleware.
+Native apps and separately hosted web clients render their own interfaces and do not use this plugin's web transformations.
 
 ## Install
 
-1. Install the matching **File Transformation 3.x** build for your Jellyfin version. Add [IAmParadox27's plugin repository](https://www.iamparadox.dev/jellyfin/plugins/manifest.json) in **Dashboard → Plugins → Repositories**, then install **File Transformation** from the catalog. This is an explicit prerequisite; Jellyfin does not automatically install it from dependency metadata.
-2. Add **Infinite Scroll** as a repository with this URL:
+1. Install **File Transformation 3.x** for your Jellyfin version. Add [IAmParadox27's plugin repository](https://www.iamparadox.dev/jellyfin/plugins/manifest.json) in **Dashboard → Plugins → Repositories**, install **File Transformation**, and restart Jellyfin.
+2. Add **Infinite Scroll** as a plugin repository using:
 
    ```text
    https://raw.githubusercontent.com/tommyvange/Jellyfin-Infinite-Scroll/manifest/manifest.json
    ```
 
-3. Install **Infinite Scroll** from the catalog, restart Jellyfin, and hard-refresh the web client. The server log should include `Infinite Scroll registered its web transformations with File Transformation.`
-4. Open **Dashboard → Plugins → Infinite Scroll**, choose the batch size, **Loading more items message**, and **All items loaded message**, and save. Reload open Jellyfin tabs after changing the settings. The settings apply to all users of the server-hosted web client.
+3. Install **Infinite Scroll** from the catalog, restart Jellyfin, and hard-refresh the web client.
+4. Open **Dashboard → Plugins → Infinite Scroll**, choose the batch size and status messages, and save. Reload open Jellyfin tabs to apply changes. Settings apply to all users.
 
-The [catalog](https://raw.githubusercontent.com/tommyvange/Jellyfin-Infinite-Scroll/manifest/manifest.json) and [GitHub Releases](https://github.com/tommyvange/Jellyfin-Infinite-Scroll/releases) also provide ZIPs for manual installation: stop Jellyfin and extract all ZIP contents (the DLL, `meta.json`, and plugin image) directly into `plugins/Infinite Scroll_<version>/`. For the official Docker image, the plugin directory is normally `/config/plugins/`.
+File Transformation must be installed separately; Jellyfin does not install it automatically.
 
-The catalog distributes one package built against the minimum supported Jellyfin ABI, **12.0**. CI verifies production web assets at that baseline and at the latest stable release, and compiles against the latest server package to detect API changes. It does not rebuild a growing list of past minor versions. File Transformation itself still needs its matching server-version build.
+For manual installation, download the ZIP from [GitHub Releases](https://github.com/tommyvange/Jellyfin-Infinite-Scroll/releases), stop Jellyfin, and extract all ZIP contents directly into `plugins/Infinite Scroll_<version>/`. The DLL, `meta.json`, and plugin image must be at that directory's root. In the official Docker image, the plugins directory is normally `/config/plugins/`. Preserve the separate plugin configuration when upgrading, then restart Jellyfin and refresh the web client.
 
-**Upgrading an early manual installation:** the original local ZIPs set `autoUpdate` to false. Merely adding the catalog does not change that installed preference. Stop Jellyfin and replace the old DLL and `meta.json` with the new release package to use normal catalog updates; retain your separate plugin configuration file. New release packages set `autoUpdate` to true, and Jellyfin's own update settings and scheduled task control when updates run.
+**Upgrading an early manual installation:** early packages set `autoUpdate` to `false` in `meta.json`. Adding the catalog does not change that preference. Stop Jellyfin and replace the old DLL and `meta.json` with the current release package, keeping the separate plugin configuration file. Current packages set `autoUpdate` to `true`; Jellyfin's update settings and scheduled task control when updates run.
 
-You can turn the extension off in its settings and reload the web client to restore native paging. To remove it, uninstall through the dashboard or stop Jellyfin and remove only its plugin directory.
+To disable the plugin, turn it off in its settings and reload the web client. To remove it, uninstall through the dashboard or stop Jellyfin and remove its plugin directory.
 
-If scrolling does not activate, check that both plugins are loaded, that File Transformation matches the server version, and that you are using the server's `/web/` client. Clear its cached assets after installation. The plugin discovers supported files in the installed web directory at startup; restart Jellyfin after replacing web assets. File Transformation selects one filename-pattern pipeline. This plugin registers only the recognized files by exact path so it does not consume unrelated plugins' JavaScript pipelines. A different transformation of the same target file still needs compatible integration.
+## Settings and supported views
 
-## Build and package
+The default status messages are **Loading more items…** and **All items loaded.** Enter your own plain text in **Loading more items message** and **All items loaded message**, or leave either setting blank to hide its text. Existing configurations keep the defaults when upgrading.
 
-Requirements: **.NET 10 SDK**, **Node.js 20+**, and the `zip` utility. There are no npm dependencies. Server-provided Jellyfin assemblies are not bundled in the ZIP.
+Supported views include:
+
+- **Modern layout:** Movies, Shows, Episodes, Favorites, Collections, Playlists, Albums, Artists, Album Artists, Songs, Studios/Networks, Books, Authors, Photos, Photo Albums, Videos, Music Videos, Mixed Media, and Folders.
+- **Legacy layout:** Movies and Shows, including the Movies controller's Favorites mode and card/list layouts.
+- **Category results in both layouts:** Movie genres such as **Movies → Categories → Comedy**, plus music genre, studio, and person results handled by the shared list page.
+
+The toolbar shows the server's total item count while paging controls and page ranges are hidden. The total stays consistent as batches load and updates when filters change.
+
+Requests load one batch at a time and stop at the server's total. A failed request keeps the loaded items and shows a **Retry** button for the same offset. Filters, sorting, and ordinary refreshes start a new result set. Legacy views preserve scroll position and focus when adding items.
+
+**Random sort retains native paging.** Jellyfin generates a new random order for each request, so offset paging cannot provide a complete, stable random list. Horizontal suggestion and genre preview rows, Live TV, and other unsupported views keep their normal behavior.
+
+Loaded items remain mounted until the library is reset; the plugin does not virtualize the list.
+
+## Troubleshooting
+
+If scrolling does not activate, check that both plugins are loaded and File Transformation matches the server version. Use the server's `/web/` client and clear cached web assets. The server log should include `Infinite Scroll registered its web transformations with File Transformation.`
+
+The plugin discovers supported files in the installed web directory at startup. Restart Jellyfin after replacing web assets. Unsupported assets are left unchanged.
+
+File Transformation edits served assets without changing installed web files. Infinite Scroll registers exact paths for recognized files so unrelated JavaScript pipelines remain available to other plugins. Another plugin transforming the same file still needs compatible integration.
+
+The client script loads from the same origin and preserves a configured server base path. Library requests use Jellyfin's authenticated API client and user permissions.
+
+## Build and test
+
+Requires **.NET 10 SDK**, **Node.js 20+**, and `zip`/`unzip`. There are no npm dependencies to install.
 
 ```sh
 npm test
-dotnet run --project tests/Transformations
-dotnet run --project tests/RegistrationScanner
-node scripts/package.mjs
+npm run test:transformations
+npm run test:registration
+npm run build
+npm run package
 ```
 
-Packaging defaults to the minimum supported ABI from `release/config.json`; pass an explicit Jellyfin NuGet package version only when testing another build target. Set `DOTNET=/absolute/path/to/dotnet` if the SDK is not on your PATH. Packages and SHA-256 checksums are written to `artifacts/`. The plugin DLL embeds its settings page and client script.
+The package command builds the plugin in Release mode and writes the ZIP and SHA-256 checksum to `artifacts/`. It targets the minimum Jellyfin version in `release/config.json`, currently **12.0.0**. Set `DOTNET=/absolute/path/to/dotnet` if the SDK is not on your PATH.
 
-The plugin release version is defined in `Directory.Build.props`. The DLL version, ZIP name, plugin manifest, and client-script cache key derive from that value.
+The DLL embeds the client script and settings page. Jellyfin supplies the server assemblies, so there is no separate frontend build or web deployment.
 
-To repeat the verification against the latest official production web client (also requires the `ar` and `tar` utilities):
+Tests cover loading, offsets, deduplication, retries, cancellation, stale responses, navigation, status messages, native paging fallbacks, scroll and focus behavior, asset transformations, registration, and release tooling.
+
+To check the official production web assets, also install `ar` and `tar`, then run:
 
 ```sh
 FIXTURE_DIR=.research/fixtures/latest
@@ -70,32 +97,18 @@ node scripts/verify-native-bridge.mjs "$FIXTURE_DIR"
 node scripts/verify-category-bridge.mjs "$FIXTURE_DIR"
 ```
 
-Use an exact version such as `12.0.0` instead of `latest` to repeat a particular check. Without a directory argument, fixtures go under `.research/fixtures/<resolved-version>/`. The downloader uses the official **web-only Debian package** (about 32 MB, instead of the roughly 300 MB portable server archive), verifies its SHA-256, and discovers the five integration chunks by their code. Chunk IDs and filename hashes are not hardcoded. Only those selected assets and a provenance/checksum record are retained; complete, validated caches skip the package download.
+Replace `latest` with an exact version in both the directory and downloader arguments to repeat a particular check. The downloader verifies the official web-only Debian package's SHA-256 and discovers integration chunks by their contents.
 
-GitHub Actions checks at most two versions: the pinned baseline and the latest published stable release, deduplicated if they are the same. The latest version and package checksum are resolved once per run and passed unchanged to the jobs. Metadata/network failures and missing production assets fail the check instead of falling back to an older version. A weekly Monday check also detects upstream changes when this repository has no commits. Releases run the same checks and publish only the minimum-ABI package.
+GitHub Actions checks the minimum supported version and the latest stable Jellyfin release, compiles against the latest server API, and repeats the checks weekly. Before releasing, also test a running server with both layouts, category results, filters, sorting, returning from item details, playback and selection, a reverse-proxy base path, and recovery from a failed request.
 
-The runtime tests cover loading, offsets, deduplication, failures/retries, cancellation, stale requests, navigation, native paging fallbacks, completion messages, and Legacy scroll/focus behavior. The transformation tests verify untouched unsupported assets, idempotency, renamed minifier bindings, and syntax of actual patched assets. Registration tests verify exact-file discovery, unrelated chunk exclusion, nested paths, and stable transformation IDs. Release-tooling tests verify catalog checksums and history, stable identity, package contents, draft publication, and safe retries.
+## Releases and deployment
 
-These checks do not replace testing on a running Jellyfin server with an actual media library. Before distributing a release, verify Movies and Shows in both layouts, opening a genre/category and scrolling its results, filters, sorting, returning from item details, playback/selection, a configured reverse-proxy base path, and a failed network request.
+Update the four-part version in `Directory.Build.props`, the three-part version in `package.json`, and the release notes in `release/notes.md`. Commit and push to `main`, wait for **Build and test** to pass, then push a matching version tag, such as `v1.2.1.0`.
 
-## GitHub releases and catalog
+GitHub Actions runs the tests and compatibility checks, publishes the ZIP and SHA-256 checksum to GitHub Releases, and updates the Jellyfin catalog on the `manifest` branch. The release package targets the minimum supported Jellyfin version. The catalog retains earlier versions and includes Jellyfin's required MD5 checksum of the published ZIP.
 
-Push a version tag matching `Directory.Build.props`, such as `v1.2.1.0`, to publish a stable release. Actions reruns all checks, publishes the tested minimum-ABI ZIP and SHA-256 sidecar, and then updates the generated catalog on the `manifest` branch. The catalog contains Jellyfin's required MD5 checksum of the exact published ZIP, with a fixed release URL and prior versions retained. No personal access token, custom server, or GitHub Pages configuration is required.
+Publishing uses GitHub Actions' built-in token. See [the release guide](docs/releasing.md) for versioning, publication retries, and the compatibility policy.
 
-See [the release guide](docs/releasing.md) for versioning, retries, and the baseline/latest compatibility policy.
+## License
 
-## Implementation and research
-
-[Jellyfin 12](https://jellyfin.org/posts/jellyfin-release-12.0/) made Modern the default layout and moved server plugins to .NET 10. Supporting only the older `.itemsContainer` controllers would therefore miss the default interface.
-
-The plugin uses [File Transformation 3](https://github.com/IAmParadox27/jellyfin-plugin-file-transformation/releases) to edit served assets without modifying installed web files. A hosted service registers reflection callbacks after all plugin instances have been constructed. The registration follows the dependency's [documented reflection bridge](https://github.com/IAmParadox27/jellyfin-plugin-file-transformation#referencing-this-as-a-library), avoiding cross-plugin assembly-load-context dependencies.
-
-The index transformation loads a same-origin client script before Jellyfin's bundles. The client URL is relative to `/web/`, preserving a server base path. The script contains only public plugin settings; requests for library data still use Jellyfin's authenticated native API client and user permissions.
-
-For Modern libraries, a guarded transformation wraps [useGetItemsViewByType](https://github.com/jellyfin/jellyfin-web/blob/v12.2/src/hooks/useFetchItems.ts). Each native request receives a cloned view-settings object with a batch offset and limit; the saved settings and user page-size preference stay intact. IntersectionObserver triggers native React Query refetches, and merged DTOs feed the existing [ItemsView](https://github.com/jellyfin/jellyfin-web/blob/v12.2/src/apps/modern/features/libraries/components/ItemsView.tsx). A separate guarded [toolbar](https://github.com/jellyfin/jellyfin-web/blob/v12.2/src/apps/modern/features/libraries/components/LibraryToolbar.tsx) transformation disables its pagination controls and range text while that query is active.
-
-The [Legacy Movies](https://github.com/jellyfin/jellyfin-web/blob/v12.2/src/apps/legacy/controllers/movies/movies.js) and [Legacy Shows](https://github.com/jellyfin/jellyfin-web/blob/v12.2/src/apps/legacy/controllers/shows/tvshows.js) transformations wrap their own fetch/render callbacks. Appended batches preserve the scroll position and focus. Startup discovery scans webpack chunks and registers exact relative paths only for recognized assets. Content fingerprints require every supported structure before applying edits; unsupported bundles are returned unchanged.
-
-Category links from either layout open the [shared Legacy list controller](https://github.com/jellyfin/jellyfin-web/blob/v12.4/src/apps/legacy/controllers/list.js). Its transformation wraps only the displayed list's fetch callback, passing adapted offsets and limits into Jellyfin's native item query. The controller continues to apply the authenticated server client, genre and parent-library constraints, filters, sort, and alphabet picker. The session identity includes those view settings so a change resets the accumulated results. Play All, Queue, and Shuffle use separate native requests that the transformation leaves intact.
-
-Sources and production packages were checked on **31 October 2026**, including the [official Web releases](https://github.com/jellyfin/jellyfin-web/releases) and [official Debian package index](https://repo.jellyfin.org/debian/dists/trixie/main/binary-amd64/Packages).
+Licensed under the [GNU General Public License v3.0](LICENSE).
