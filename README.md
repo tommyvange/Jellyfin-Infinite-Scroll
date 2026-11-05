@@ -5,6 +5,12 @@
 [![Latest release](https://img.shields.io/github/v/release/tommyvange/Jellyfin-Infinite-Scroll)](https://github.com/tommyvange/Jellyfin-Infinite-Scroll/releases/latest)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
+> [!NOTE]
+> This plugin only changes the behaviour of the default Jellyfin Web interface, it does not do anything to third party clients.
+
+> [!WARNING]
+> This plugin requires IAmParadox27's [File Transformation](https://github.com/IAmParadox27/jellyfin-plugin-file-transformation) plugin.
+
 ![Infinite Scroll](assets/Jellyfin-Infinite-Scroll.png)
 
 Replace paging with infinite scrolling in the server-hosted Jellyfin Web client. Scroll toward the bottom of a library to load the next batch into the same list, with Jellyfin's native cards, filters, sorting, selection, and item actions.
