@@ -9,12 +9,12 @@
     var completionMessage = typeof config.completionMessage === 'string' ? config.completionMessage : 'All items loaded.';
     var sessions = new Map();
     var listBindings = new WeakMap();
+    var listContainers = new WeakMap();
     var currentInvocation = null;
     var active = null;
     var observer = null;
     var sentinel = null;
     var totalCount = null;
-    var viewportInput = 0;
     var queued = false;
     var supportedViews = new Set([
         'movies', 'series', 'episodes', 'favorites', 'collections', 'playlists',
@@ -191,136 +191,59 @@
         });
     }
 
-    function captureListViewport(container) {
-        var positions = [];
-        for (var parent = container.parentElement; parent; parent = parent.parentElement) {
-            if (typeof parent.scrollTop === 'number') {
-                positions.push({ element: parent, left: parent.scrollLeft, top: parent.scrollTop });
-            }
-        }
-        var focused = window.document.activeElement;
-        var card = focused && container.contains(focused) && focused.closest('[data-id]');
-        var focus = null;
-        if (card && container.contains(card)) {
-            var path = [];
-            for (var node = focused; node !== card; node = node.parentElement) {
-                path.unshift(Array.prototype.indexOf.call(node.parentElement.children, node));
-            }
-            focus = { id: card.getAttribute('data-id'), path: path, tag: focused.tagName };
-        }
-        return {
-            left: window.scrollX || 0, top: window.scrollY || 0,
-            positions: positions, focus: focus, input: viewportInput
-        };
-    }
-
-    function restoreListViewport(container, snapshot) {
-        var focused = window.document.activeElement;
-        if (snapshot.focus && (!focused || focused === window.document.body || container.contains(focused))) {
-            var target = Array.from(container.querySelectorAll('[data-id]')).find(function (card) {
-                return card.getAttribute('data-id') === snapshot.focus.id;
-            });
-            snapshot.focus.path.forEach(function (index) { target = target && target.children[index]; });
-            if (target && target.tagName === snapshot.focus.tag && typeof target.focus === 'function') {
-                target.focus({ preventScroll: true });
-            }
-        }
-        snapshot.positions.forEach(function (position) {
-            var element = position.element;
-            if (!element.isConnected || (element.scrollLeft === position.left && element.scrollTop === position.top)) return;
-            if (typeof element.scrollTo === 'function') {
-                element.scrollTo({ left: position.left, top: position.top, behavior: 'instant' });
-            } else {
-                element.scrollLeft = position.left;
-                element.scrollTop = position.top;
-            }
-        });
-        if ((window.scrollX || 0) !== snapshot.left || (window.scrollY || 0) !== snapshot.top) {
-            window.scrollTo({ left: snapshot.left, top: snapshot.top, behavior: 'instant' });
-        }
-    }
-
     function bindListRenderer(binding, container, host) {
         if (!container || typeof container.getItemsHtml !== 'function') return;
         var getItemsHtml = container.getItemsHtml;
         var afterRefresh = container.afterRefresh;
-        var releaseScrollModes;
-        function release() {
-            if (releaseScrollModes) releaseScrollModes();
-            releaseScrollModes = null;
-        }
-        function current(record) {
-            return record && active === record.session && binding.session === record.session &&
-                record.session.host === host &&
-                record.session.generation === record.generation && record.session.route === window.location.href && visible(host);
-        }
+        binding.host = host;
+        binding.renderedItems = null;
+        binding.getItemsHtml = getItemsHtml;
+        listContainers.set(container, binding);
         function render(items) {
-            release();
-            binding.snapshot = null;
             var html = getItemsHtml.apply(this, arguments);
-            var record = binding.renderResult;
-            if (current(record) && record.append && record.result.Items === items) {
-                // Capture at render time, after any scrolling during the request.
-                binding.snapshot = { record: record, viewport: captureListViewport(container) };
-                // Native TV focus queues scrollManager work. Its custom-scroll
-                // marker prevents that work from starting a smooth animation.
-                var modes = ['data-scroll-mode-x', 'data-scroll-mode-y'].map(function (name) {
-                    var previous = container.getAttribute(name);
-                    container.setAttribute(name, 'custom');
-                    return { name: name, previous: previous };
-                });
-                releaseScrollModes = function () {
-                    modes.forEach(function (mode) {
-                        if (container.getAttribute(mode.name) !== 'custom') return;
-                        if (mode.previous === null) container.removeAttribute(mode.name);
-                        else container.setAttribute(mode.name, mode.previous);
-                    });
-                };
-            }
+            binding.renderedItems = items.slice();
             return html;
         }
         function rendered(result) {
-            var snapshot = binding.snapshot;
-            binding.snapshot = null;
             if (binding.renderResult && binding.renderResult.result === result) binding.renderResult = null;
-            try {
-                if (typeof afterRefresh === 'function') return afterRefresh.apply(this, arguments);
-            } finally {
-                // Native rendering can autofocus the first card after replacing
-                // nested links without data-id. Restore focus and scroll before paint.
-                if (snapshot) {
-                    var accepted = snapshot.record.result === result && current(snapshot.record);
-                    var releaseRenderedScrollModes = releaseScrollModes;
-                    try {
-                        if (accepted) restoreListViewport(container, snapshot.viewport);
-                    } finally {
-                        // Keep the markers until queued native focus tasks finish.
-                        // Always clean up, even if navigation or user input took over.
-                        window.setTimeout(function () {
-                            try {
-                                if (accepted && viewportInput === snapshot.viewport.input && current(snapshot.record)) {
-                                    restoreListViewport(container, snapshot.viewport);
-                                }
-                            } finally {
-                                if (releaseScrollModes === releaseRenderedScrollModes) release();
-                            }
-                        }, 0);
-                    }
-                }
-            }
+            if (typeof afterRefresh === 'function') return afterRefresh.apply(this, arguments);
         }
+        binding.render = render;
         container.getItemsHtml = render;
         container.afterRefresh = rendered;
         binding.disposeRenderer = function () {
-            // A view can be destroyed by afterRefresh, after native TV focus has
-            // queued work. Keep its markers until those already queued tasks run.
-            var releaseDestroyedScrollModes = releaseScrollModes;
-            if (releaseDestroyedScrollModes) window.setTimeout(function () {
-                if (releaseScrollModes === releaseDestroyedScrollModes) release();
-            }, 0);
+            if (listContainers.get(container) === binding) listContainers.delete(container);
             if (container.getItemsHtml === render) container.getItemsHtml = getItemsHtml;
             if (container.afterRefresh === rendered) container.afterRefresh = afterRefresh;
         };
+    }
+
+    // The native ItemsContainer calls this only at its render boundary. Leave
+    // initial loads and ordinary refreshes to its original renderer.
+    function appendList(container, result, lazyChildren) {
+        var binding = listContainers.get(container);
+        var record = binding && binding.renderResult;
+        if (!record || !record.append || record.result !== result || container.getItemsHtml !== binding.render ||
+            active !== record.session || binding.session !== record.session ||
+            record.session.host !== binding.host || record.session.generation !== record.generation ||
+            record.session.route !== window.location.href || !visible(binding.host)) return false;
+        var items = result.Items;
+        var previous = binding.renderedItems;
+        // Only append an unchanged prefix of the exact cards already rendered.
+        // A reset or an incompatible renderer always uses the full native path.
+        if (!previous || previous.length > items.length ||
+            previous.some(function (item, index) { return item !== items[index]; })) return false;
+        var added = items.slice(previous.length);
+        if (added.length) {
+            var staging = window.document.createElement('div');
+            staging.innerHTML = binding.getItemsHtml.call(container, added);
+            // The native loader needs an Element, and must never rescan the old
+            // posters: observing them again can restart blurhash and fade-in.
+            lazyChildren(staging);
+            while (staging.firstChild) container.appendChild(staging.firstChild);
+        }
+        binding.renderedItems = items.slice();
+        return true;
     }
 
     function rememberListSession(host, session, container) {
@@ -346,7 +269,6 @@
                 }
                 binding.session = null;
                 binding.renderResult = null;
-                binding.snapshot = null;
                 if (binding.disposeRenderer) binding.disposeRenderer();
                 listBindings.delete(host);
             });
@@ -455,17 +377,21 @@
             removeTotalCount();
             return;
         }
-        // Keep the server's filtered total in the top toolbar, separate from
-        // native range/arrow markup that Jellyfin replaces after each batch.
+        // Use the same public Chip root/label markup as the Modern library
+        // toolbar, so themes can style category totals through MuiChip classes.
         if (!totalCount || pager.previousElementSibling !== totalCount) {
             removeTotalCount();
             totalCount = window.document.createElement('div');
-            totalCount.className = 'listPaging jellyfin-infinite-scroll-total';
+            totalCount.className = 'MuiChip-root MuiChip-filled MuiChip-sizeMedium MuiChip-colorDefault MuiChip-filledDefault jellyfin-infinite-scroll-total';
             totalCount.setAttribute('aria-live', 'polite');
+            var label = window.document.createElement('span');
+            label.className = 'MuiChip-label MuiChip-labelMedium';
+            totalCount.appendChild(label);
             pager.insertAdjacentElement('beforebegin', totalCount);
         }
         var text = String(session.total);
-        if (totalCount.textContent !== text) totalCount.textContent = text;
+        var countLabel = totalCount.querySelector('.MuiChip-label');
+        if (countLabel.textContent !== text) countLabel.textContent = text;
     }
 
     function loadMore() {
@@ -549,18 +475,21 @@
     }
 
     window.JellyfinInfiniteScroll = {
-        useQuery: useQuery, settings: settings, legacy: legacy, legacyList: legacyList, scrollTo: scrollTo, autoFocus: autoFocus,
+        useQuery: useQuery, settings: settings, legacy: legacy, legacyList: legacyList, appendList: appendList, scrollTo: scrollTo, autoFocus: autoFocus,
         paginationDisabled: paginationDisabled, batchSize: batchSize
     };
     window.addEventListener('hashchange', navigated);
     window.addEventListener('popstate', navigated);
     window.addEventListener('pagehide', navigated);
-    ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'pointermove', 'keydown'].forEach(function (event) {
-        window.addEventListener(event, function () { viewportInput++; }, { capture: true, passive: true });
-    });
     function start() {
         var style = window.document.createElement('style');
-        style.textContent = '[data-jellyfin-infinite-scroll-paging]{display:none!important}';
+        style.textContent = '[data-jellyfin-infinite-scroll-paging]{display:none!important}' +
+            ':where(.jellyfin-infinite-scroll-total){max-width:100%;font-family:inherit;font-size:.8125rem;display:inline-flex;' +
+            'align-items:center;justify-content:center;height:32px;color:var(--jf-palette-text-primary,inherit);' +
+            'background-color:var(--jf-palette-action-selected,rgba(255,255,255,.16));border-radius:16px;white-space:nowrap;' +
+            'border:0;padding:0;vertical-align:middle;box-sizing:border-box}' +
+            ':where(.jellyfin-infinite-scroll-total>.MuiChip-label){overflow:hidden;text-overflow:ellipsis;' +
+            'padding-left:12px;padding-right:12px;white-space:nowrap}';
         window.document.head.appendChild(style);
         new window.MutationObserver(schedule).observe(window.document.body, { childList: true, subtree: true });
     }

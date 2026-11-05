@@ -57,6 +57,8 @@ Supported views include:
 
 The toolbar shows the server's total item count while paging controls and page ranges are hidden. The total stays consistent as batches load and updates when filters change.
 
+Category totals use the same MUI Chip markup and public theme classes as the Movies and Shows count. Category batches append new cards and initialize only their images, retaining the existing posters, focus, and scroll position.
+
 Requests load one batch at a time and stop at the server's total. A failed request keeps the loaded items and shows a **Retry** button for the same offset. Filters, sorting, and ordinary refreshes start a new result set. Legacy views preserve scroll position and focus when adding items.
 
 **Random sort retains native paging.** Jellyfin generates a new random order for each request, so offset paging cannot provide a complete, stable random list. Horizontal suggestion and genre preview rows, Live TV, and other unsupported views keep their normal behavior.
@@ -109,7 +111,7 @@ GitHub Actions checks the minimum supported version and the latest stable Jellyf
 
 ## Releases and deployment
 
-Update the four-part version in `Directory.Build.props`, the three-part version in `package.json`, and the release notes in `release/notes.md`. Commit and push to `main`, wait for **Build and test** to pass, then push a matching version tag, such as `v1.2.2.0`.
+Update the four-part version in `Directory.Build.props`, the three-part version in `package.json`, and the release notes in `release/notes.md`. Commit and push to `main`, wait for **Build and test** to pass, then push a matching version tag, such as `v1.2.3.0`.
 
 GitHub Actions runs the tests and compatibility checks, publishes the ZIP and SHA-256 checksum to GitHub Releases, and updates the Jellyfin catalog on the `manifest` branch. The release package targets the minimum supported Jellyfin version. The catalog retains earlier versions and includes Jellyfin's required MD5 checksum of the published ZIP.
 

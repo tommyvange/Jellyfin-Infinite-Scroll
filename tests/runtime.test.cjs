@@ -937,6 +937,12 @@ test('category header shows the full total above the list while both native rang
     const totals = list.page.querySelectorAll('.jellyfin-infinite-scroll-total');
     assert.equal(totals.length, 1, 'one header count is shown for top and bottom native pagers');
     assert.equal(totals[0].textContent, '731');
+    assert.equal(totals[0].tagName, 'DIV');
+    assert.match(totals[0].className, /\bMuiChip-root\b/, 'category totals expose the native library count theme selector');
+    const label = totals[0].querySelector('.MuiChip-label');
+    assert.equal(label.tagName, 'SPAN');
+    assert.equal(label.textContent, '731');
+    assert.match(label.className, /\bMuiChip-labelMedium\b/);
     assert.equal(totals[0].getAttribute('aria-live'), 'polite');
     assert.ok(totals[0].getClientRects().length > 0);
     assert.strictEqual(list.pager.previousElementSibling, totals[0], 'count replaces the top pager position');

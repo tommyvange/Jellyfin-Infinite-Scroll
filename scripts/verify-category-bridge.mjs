@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /** Execute the transformed, shipped list controller used by category results.
  * Its bundled native ItemsContainer renderer performs the actual replacement,
- * focus, and lifecycle flow; DOM geometry/focus effects and API I/O are modeled.
+ * append delegation, focus, and lifecycle flow. DOM/image effects and API I/O
+ * are modeled; card, image, and blurhash-canvas node identity is observable.
  * Run tests/Transformations over the upstream list chunk before this script.
  * Fixtures stay in .research and are not redistributed with the plugin.
  */
@@ -57,6 +58,10 @@ function createBoundary(config) {
         }
         get isConnected() { return this === document.documentElement || this === document.body || Boolean(this.parentNode?.isConnected); }
         get parentElement() { return this.parentNode; }
+        get firstChild() { return this.children[0] ?? null; }
+        get firstElementChild() { return this.firstChild; }
+        get childNodes() { return this.children; }
+        get childElementCount() { return this.children.length; }
         get previousElementSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) - 1] ?? null; }
         get textContent() { return this.ownText + this.children.map(child => child.textContent).join(''); }
         set textContent(value) {
@@ -67,19 +72,32 @@ function createBoundary(config) {
         get innerHTML() { return this.html ?? ''; }
         set innerHTML(value) {
             this.html = String(value);
-            if (!this.classList.contains('itemsContainer')) return;
-            this.replacements = (this.replacements ?? 0) + 1;
+            if (!this.classList.contains('itemsContainer') && !this.html.trim().startsWith('<')) return;
+            if (this.classList.contains('itemsContainer')) this.replacements = (this.replacements ?? 0) + 1;
             if (this.contains(document.activeElement)) document.activeElement = document.body;
             this.children.forEach(child => { child.parentNode = null; });
             this.children = [];
-            // Preserve the relevant structure of native cardBuilder output:
-            // the outer card carries data-id; its focusable image link does not.
-            for (const [index, match] of [...this.html.matchAll(/data-id="([^"]+)"/g)].entries()) {
-                const card = this.appendChild(new Element('card', 'DIV'));
-                card.setAttribute('data-id', match[1]);
-                card._top = index * 250;
-                const link = card.appendChild(new Element('cardImageContainer cardContent itemAction', 'A'));
-                link._top = card._top;
+            this.ownText = '';
+            // The staging div used for append must have the same real child
+            // structure as a normal native render, including loaded artwork.
+            const stack = [this];
+            let cardIndex = 0;
+            for (const token of this.html.match(/<[^>]+>|[^<]+/g) ?? []) {
+                if (token.startsWith('</')) {
+                    if (stack.length > 1) stack.pop();
+                } else if (token.startsWith('<')) {
+                    const match = token.match(/^<([\w-]+)\b([^>]*)>/);
+                    if (!match) continue;
+                    const child = stack.at(-1).appendChild(new Element('', match[1].toUpperCase()));
+                    for (const attribute of match[2].matchAll(/([\w-]+)(?:="([^"]*)")?/g)) {
+                        child.setAttribute(attribute[1], attribute[2] ?? '');
+                        if (attribute[1] === 'class') child.className = attribute[2];
+                    }
+                    child._top = child.hasAttribute('data-id') ? cardIndex++ * 250 : stack.at(-1)._top;
+                    if (!['IMG', 'BR', 'INPUT', 'HR'].includes(child.tagName) && !token.endsWith('/>')) stack.push(child);
+                } else {
+                    stack.at(-1).ownText += token;
+                }
             }
         }
         matches(selector) {
@@ -281,7 +299,7 @@ function nativeFactory(source, context) {
     return { list: candidates[0], items: itemFactories[0] };
 }
 
-function createController(source, runtimeSource, config = {}, { runtime = true, olderRuntime = false, item, params, sort, recordCount = 225 } = {}) {
+function createController(source, runtimeSource, config = {}, { runtime = true, olderRuntime = false, olderAppendRuntime = false, item, params, sort, recordCount = 225 } = {}) {
     const boundary = createBoundary(config);
     const context = vm.createContext({
         window: boundary.window, document: boundary.window.document, DOMException, console,
@@ -291,11 +309,14 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
     context.HTMLDivElement.prototype = boundary.Element.prototype;
     if (runtime) vm.runInContext(runtimeSource, context);
     if (olderRuntime) delete boundary.window.JellyfinInfiniteScroll.legacyList;
+    if (olderAppendRuntime) delete boundary.window.JellyfinInfiniteScroll.appendList;
     const { list: factory, items: itemsFactory } = nativeFactory(source, context);
     const text = factory.toString();
     const requests = [];
     const itemRequests = [];
     const rendered = [];
+    const lazyScopes = [];
+    const afterRefreshCalls = [];
     const playback = [];
     const resumes = [];
     const records = Array.from({ length: recordCount }, (_unused, index) => ({ Id: `movie-${index}`, Name: `Movie ${index}` }));
@@ -352,7 +373,7 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
     bindUsage('translate', { translate: key => key });
     const renderCards = options => {
         rendered.push(options);
-        return options.items.map(item => `<div class="card" data-id="${item.Id}"><a class="cardImageContainer cardContent itemAction"></a></div>`).join('');
+        return options.items.map(item => `<div class="card" data-id="${item.Id}"><a class="cardImageContainer cardContent itemAction"><img class="cardImage" data-src="${item.Id}.jpg"><canvas class="blurhash"></canvas></a></div>`).join('');
     };
     bindUsage('getCardsHtml', { getCardsHtml: renderCards });
     bindUsage('getListViewHtml', { getListViewHtml: renderCards });
@@ -397,7 +418,11 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
             on() {} off() {} destroy() {}
         }
     });
-    imports.set(76542, { Ay: { lazyChildren() {} } });
+    imports.set(76542, { Ay: { lazyChildren(scope) {
+        const images = scope.querySelectorAll('.cardImage');
+        lazyScopes.push({ scope, connected: scope.isConnected, images: images.slice() });
+        for (const image of images) image.initializations = (image.initializations ?? 0) + 1;
+    } } });
     const require = id => imports.get(id) ?? (id === 84069 ? { default: boundary.focusManager } : {});
     require.r = exports => Object.defineProperty(exports, '__esModule', { value: true });
     require.d = (exports, getters) => {
@@ -417,15 +442,21 @@ function createController(source, runtimeSource, config = {}, { runtime = true, 
     const nativeParams = params ?? { genreId: 'comedy', parentId: 'movies-library', serverId: 'server-1' };
     const instance = new exports.default(boundary.view, nativeParams);
     instance.currentItem = state.item;
-    instance.alphaPicker = { value: () => state.alphabet };
+    instance.alphaPicker = { value: () => state.alphabet, off() {}, destroy() {} };
     let result;
-    boundary.items.afterRefresh = value => { result = value; state.afterRefresh?.(value); };
+    const nativeGetItemsHtml = boundary.items.getItemsHtml;
+    const nativeAfterRefresh = boundary.items.afterRefresh = function (value) {
+        afterRefreshCalls.push({ receiver: this, args: Array.from(arguments) });
+        result = value;
+        return state.afterRefresh?.apply(this, arguments);
+    };
     const nativeResume = boundary.items.resume;
     boundary.items.resume = function (options) {
         resumes.push(normalize(options));
         return nativeResume.call(this, options);
     };
     return { boundary, instance, state, requests, itemRequests, rendered, playback, records, resumes,
+        lazyScopes, afterRefreshCalls, nativeGetItemsHtml, nativeAfterRefresh,
         get result() { return result; }, fetch: () => boundary.items.refreshItems() };
 }
 
@@ -454,7 +485,8 @@ async function exerciseCategory(source, runtimeSource, batchSize) {
     assert.ok(h.requests.every(request => request.query.Limit === batchSize && request.userId === 'category-user'));
     assert.equal(h.result.Items.length, batchSize * 2);
     assert.deepEqual(Array.from(h.result.Items, item => item.Id), h.records.slice(0, batchSize * 2).map(item => item.Id));
-    assert.equal(h.rendered.at(-1).items.length, batchSize * 2, 'Native card renderer receives accumulated results');
+    assert.equal(h.rendered.at(-1).items.length, batchSize, 'Native card renderer receives only the new suffix');
+    assert.equal(h.boundary.items.replacements, 1, 'The initial native render is not replaced during append');
     assert.equal(h.rendered.at(-1).overlayMoreButton, true, 'Native card actions survive');
 
     h.state.filters = { IsUnplayed: true, IsHD: true };
@@ -477,7 +509,7 @@ async function exerciseCategory(source, runtimeSource, batchSize) {
     await h.fetch();
     assert.equal(h.requests.at(-1).query.StartIndex, 0);
     assert.equal(h.requests.at(-1).query.NameStartsWith, 'B');
-    console.log(`PASS: actual Movies > Categories > Comedy controller, batch ${batchSize}, native category/parent/auth/filter/sort/alpha queries, accumulated renderer, and hidden pagination.`);
+    console.log(`PASS: actual Movies > Categories > Comedy controller, batch ${batchSize}, native category/parent/auth/filter/sort/alpha queries, suffix-only append, and hidden pagination.`);
 }
 
 async function exerciseFallback(source, runtimeSource, config, options, label) {
@@ -599,6 +631,7 @@ async function exerciseAbandonedFinalBatch(source, runtimeSource) {
     h.boundary.view.dispatch('viewshow', { isRestored: false });
     await h.boundary.settle();
     assert.equal(h.result.Items.length, 100);
+    const cachedNodes = artworkSnapshot(h);
     let releaseResponse;
     h.state.nextItemsResponse = new Promise(resolve => { releaseResponse = resolve; });
     h.boundary.intersect();
@@ -613,12 +646,14 @@ async function exerciseAbandonedFinalBatch(source, runtimeSource) {
     h.boundary.view.dispatch('viewshow', { isRestored: true });
     await h.boundary.settle();
     assert.equal(h.requests.length, 2, 'Restoring cached native cards does not refetch');
+    assertArtworkPreserved(h, cachedNodes, 'Returning from details preserves the unexhausted cached DOM');
     assert.doesNotMatch(h.boundary.sentinel.textContent, /All items loaded/);
     h.boundary.intersect();
     await h.boundary.settle();
     assert.deepEqual(h.requests.map(request => request.query.StartIndex), [0, 100, 100]);
     assert.deepEqual(Array.from(h.result.Items, item => item.Id), h.records.map(item => item.Id));
-    assert.equal(h.rendered.at(-1).items.length, 150);
+    assert.equal(h.rendered.at(-1).items.length, 50);
+    assertArtworkPreserved(h, cachedNodes, 'Retrying the unrendered final offset appends to cached DOM');
     assert.equal(h.boundary.sentinel.textContent, 'All items loaded.');
     console.log('PASS: a final batch resolved while away cannot exhaust cached category cards; returning retries the unrendered offset and renders all 150 cards once.');
 }
@@ -630,6 +665,13 @@ async function exerciseCategoryCount(source, runtimeSource) {
     assert.equal(h.result.Items.length, 100);
     assert.equal(h.boundary.total.textContent, '731', 'Header displays full category total while only one batch is loaded');
     assert.equal(h.boundary.total.getAttribute('aria-live'), 'polite');
+    assert.ok(h.boundary.total.classList.contains('MuiChip-root'), 'Category count exposes the native library Chip theme class');
+    assert.ok(h.boundary.total.classList.contains('MuiChip-filled'));
+    assert.ok(h.boundary.total.classList.contains('MuiChip-sizeMedium'));
+    assert.ok(h.boundary.total.classList.contains('MuiChip-colorDefault'));
+    const label = h.boundary.total.querySelector('.MuiChip-label.MuiChip-labelMedium');
+    assert.ok(label, 'Category count preserves the native Chip label structure');
+    assert.equal(label.textContent, '731');
     assert.equal(h.boundary.view.querySelectorAll('.jellyfin-infinite-scroll-total').length, 1);
     assert.strictEqual(h.boundary.pager.previousElementSibling, h.boundary.total, 'Header count occupies the first native pager position');
     for (const pager of h.boundary.pagers) {
@@ -717,6 +759,28 @@ function assertFocusedCard(h, id) {
     assert.ok(h.boundary.window.document.activeElement.isConnected);
 }
 
+function artworkSnapshot(h) {
+    return h.boundary.items.querySelectorAll('.card').map(card => ({
+        card,
+        link: card.querySelector('.cardImageContainer'),
+        image: card.querySelector('.cardImage'),
+        canvas: card.querySelector('.blurhash'),
+        initializations: card.querySelector('.cardImage').initializations
+    }));
+}
+
+function assertArtworkPreserved(h, snapshot, label) {
+    const cards = h.boundary.items.querySelectorAll('.card');
+    for (const [index, previous] of snapshot.entries()) {
+        assert.strictEqual(cards[index], previous.card, `${label}: existing card ${index} is retained`);
+        assert.strictEqual(cards[index].querySelector('.cardImageContainer'), previous.link);
+        assert.strictEqual(cards[index].querySelector('.cardImage'), previous.image);
+        assert.strictEqual(cards[index].querySelector('.blurhash'), previous.canvas);
+        assert.equal(previous.image.initializations, previous.initializations, `${label}: old artwork is not initialized again`);
+        assert.ok(previous.link.isConnected);
+    }
+}
+
 async function exerciseAppendViewport(source, runtimeSource) {
     const h = createController(source, runtimeSource);
     moveViewport(h, { windowX: 7, windowY: 1200, ancestorX: 11, ancestorY: 1600 });
@@ -725,6 +789,10 @@ async function exerciseAppendViewport(source, runtimeSource) {
     assert.equal(h.boundary.window.scrollY, 0, 'Initial native viewshow retains its autofocus behavior');
     assert.equal(h.boundary.view.scrollTop, 0);
     const focusedId = focusCard(h, 25);
+    const originalLink = h.boundary.window.document.activeElement;
+    const originalArtwork = artworkSnapshot(h);
+    const initialLazyScopes = h.lazyScopes.length;
+    assert.ok(originalArtwork.every(item => item.initializations === 1), 'Initial native lazy initialization runs once');
     moveViewport(h, { windowX: 17, windowY: 1200, ancestorX: 11, ancestorY: 1450 });
     let releaseResponse;
     h.state.nextItemsResponse = new Promise(resolve => { releaseResponse = resolve; });
@@ -738,10 +806,23 @@ async function exerciseAppendViewport(source, runtimeSource) {
     assert.equal(h.result.Items.length, 200);
     assert.deepEqual(viewport(h), latest, 'Append preserves the latest viewport after scrolling during the request');
     assertFocusedCard(h, focusedId);
-    assert.ok(h.boundary.focusEvents.slice(focusCount).some(event => !event.preventScroll), 'Real native renderer attempted its autofocus jump');
-    assert.ok(h.boundary.focusEvents.slice(focusCount).some(event => event.preventScroll), 'Restored focus does not move the viewport again');
+    assert.strictEqual(h.boundary.window.document.activeElement, originalLink, 'The original focused link survives append');
+    assert.equal(h.boundary.focusEvents.length, focusCount, 'Appending retained DOM does not perform any focus operation');
+    assertArtworkPreserved(h, originalArtwork, 'Successful append');
+    assert.equal(h.boundary.items.replacements, 1);
+    assert.equal(h.rendered.at(-1).items.length, 100);
+    assert.deepEqual(Array.from(h.rendered.at(-1).items, item => item.Id), h.records.slice(100, 200).map(item => item.Id));
+    assert.equal(h.lazyScopes.length, initialLazyScopes + 1, 'Only new artwork gets one lazy initialization pass');
+    const newScope = h.lazyScopes.at(-1);
+    assert.notStrictEqual(newScope.scope, h.boundary.items, 'Lazy initialization is scoped to the staging element');
+    assert.equal(newScope.connected, false, 'Only the detached new cards are initialized');
+    assert.equal(newScope.images.length, 100);
+    assert.ok(newScope.images.every(image => image.initializations === 1 && image.isConnected));
 
     const failedFocusId = focusCard(h, 35);
+    const beforeFailure = artworkSnapshot(h);
+    const rendersBeforeFailure = h.rendered.length;
+    const lazyBeforeFailure = h.lazyScopes.length;
     let rejectResponse;
     h.state.nextItemsResponse = new Promise((_resolve, reject) => { rejectResponse = reject; });
     h.boundary.intersect();
@@ -751,8 +832,12 @@ async function exerciseAppendViewport(source, runtimeSource) {
     rejectResponse(new Error('Append connection failed'));
     await h.boundary.settle();
     assert.equal(h.result.Items.length, 200);
-    assert.deepEqual(viewport(h), afterFailure, 'Failed append rerender preserves the current viewport');
+    assert.deepEqual(viewport(h), afterFailure, 'Failed append leaves the current viewport unchanged');
     assertFocusedCard(h, failedFocusId);
+    assertArtworkPreserved(h, beforeFailure, 'Failed append');
+    assert.equal(h.boundary.items.replacements, 1);
+    assert.equal(h.rendered.length, rendersBeforeFailure, 'A failed append does not regenerate existing card HTML');
+    assert.equal(h.lazyScopes.length, lazyBeforeFailure, 'A failed append does not reinitialize any artwork');
     assert.match(h.boundary.sentinel.textContent, /Could not load more items/);
     const retryPosition = { windowX: 45, windowY: 4100, ancestorX: 63, ancestorY: 5100 };
     moveViewport(h, retryPosition);
@@ -762,11 +847,20 @@ async function exerciseAppendViewport(source, runtimeSource) {
     assert.equal(h.result.Items.length, 225);
     assert.deepEqual(viewport(h), retryPosition, 'Explicit retry preserves the viewport');
     assertFocusedCard(h, failedFocusId);
+    assertArtworkPreserved(h, beforeFailure, 'Retried append');
+    assert.equal(h.rendered.at(-1).items.length, 25);
+    assert.equal(h.lazyScopes.at(-1).images.length, 25);
+    assert.equal(h.boundary.items.replacements, 1);
+    assert.equal(h.afterRefreshCalls.length, 4, 'Native afterRefresh lifecycle still runs on initial, append, failure, and retry');
+    assert.ok(h.afterRefreshCalls.every(call => call.receiver === h.boundary.items && call.args.length === 1));
 
     h.state.filters = { IsUnplayed: true };
     await h.fetch();
     await h.boundary.settle();
     assert.equal(h.result.Items.length, 100);
+    assert.equal(h.boundary.items.replacements, 2, 'A filter reset still uses the native full replacement');
+    assert.ok(beforeFailure.every(item => !item.card.isConnected), 'Filter reset discards cards from the previous query');
+    assert.equal(h.rendered.at(-1).items.length, 100);
     assert.equal(h.boundary.window.scrollY, 0, 'Normal filter refresh keeps native focus/scroll behavior');
     assert.equal(h.boundary.view.scrollTop, 0);
     const outsideFocus = h.boundary.actions.play;
@@ -777,7 +871,7 @@ async function exerciseAppendViewport(source, runtimeSource) {
     await h.boundary.settle();
     assert.deepEqual(viewport(h), outsidePosition);
     assert.strictEqual(h.boundary.window.document.activeElement, outsideFocus, 'Appending does not steal focus from outside the cards');
-    console.log('PASS: actual native renderer preserves current window/ancestor positions and card focus for append, failure, and retry; initial/filter refreshes keep native behavior.');
+    console.log('PASS: actual native renderer retains card/link/image/canvas identity and existing artwork initialization during append, failure, and retry; only new suffix cards are rendered and initialized.');
 }
 
 async function exerciseAppendNavigation(source, runtimeSource) {
@@ -803,12 +897,12 @@ async function exerciseAppendNavigation(source, runtimeSource) {
         assert.equal(h.result.Items.length, 200);
         assert.deepEqual(viewport(h), destination, `${cancellation} inside native afterRefresh prevents restoring the previous page viewport`);
         assert.strictEqual(h.boundary.window.document.activeElement, h.boundary.window.document.body);
-        assert.equal(h.boundary.nativeFocus.animationsStarted, 0, 'Already queued TV focus remains blocked through navigation/destruction');
-        assert.ok(h.boundary.nativeFocus.blocked > 0);
+        assert.equal(h.boundary.nativeFocus.animationsStarted, 0, 'Append does not enqueue native TV focus through navigation/destruction');
+        assert.equal(h.boundary.nativeFocus.blocked, 0, 'Append needs no temporary focus suppression');
         assert.equal(h.boundary.items.getAttribute('data-scroll-mode-x'), null);
         assert.equal(h.boundary.items.getAttribute('data-scroll-mode-y'), null);
     }
-    console.log('PASS: navigation/destruction inside native afterRefresh prevents stale viewport restoration, blocks prequeued TV focus, and releases temporary modes.');
+    console.log('PASS: native afterRefresh runs for append and can navigate/destroy without any later scroll or focus work.');
 }
 
 async function exerciseQueuedFocusViewport(source, runtimeSource) {
@@ -820,59 +914,109 @@ async function exerciseQueuedFocusViewport(source, runtimeSource) {
     assert.ok(h.boundary.nativeFocus.animationsStarted > 0, 'Initial native TV focus can start its smooth animation');
     const initialAnimations = h.boundary.nativeFocus.animationsStarted;
     const focusedId = focusCard(h, 25);
+    const originalLink = h.boundary.window.document.activeElement;
+    const originalArtwork = artworkSnapshot(h);
     const current = { windowX: 21, windowY: 1930, ancestorX: 32, ancestorY: 2850 };
     moveViewport(h, current);
     h.boundary.items.setAttribute('data-scroll-mode-x', 'center');
     h.boundary.items.setAttribute('data-scroll-mode-y', 'nearest');
-    let markedDuringRender = false;
+    let refreshedAfterAppend = false;
     h.state.afterRefresh = result => {
         if (result.Items.length > 100) {
-            markedDuringRender = true;
-            assert.equal(h.boundary.items.getAttribute('data-scroll-mode-x'), 'custom');
-            assert.equal(h.boundary.items.getAttribute('data-scroll-mode-y'), 'custom');
+            refreshedAfterAppend = true;
+            assert.equal(h.boundary.items.getAttribute('data-scroll-mode-x'), 'center');
+            assert.equal(h.boundary.items.getAttribute('data-scroll-mode-y'), 'nearest');
         }
     };
     h.boundary.intersect();
     await h.boundary.settle();
-    assert.ok(markedDuringRender);
-    assert.ok(h.boundary.nativeFocus.blocked >= 2, 'Both native and restored focus tasks see a custom ancestor');
+    assert.ok(refreshedAfterAppend);
+    assert.equal(h.boundary.nativeFocus.blocked, 0, 'Append does not need custom scroll-mode markers');
     assert.equal(h.boundary.nativeFocus.animationsStarted, initialAnimations, 'Append never starts a native smooth-scroll animation');
     assert.deepEqual(viewport(h), current);
     assertFocusedCard(h, focusedId);
+    assert.strictEqual(h.boundary.window.document.activeElement, originalLink);
+    assertArtworkPreserved(h, originalArtwork, 'TV append');
     assert.equal(h.boundary.items.getAttribute('data-scroll-mode-x'), 'center');
     assert.equal(h.boundary.items.getAttribute('data-scroll-mode-y'), 'nearest');
     h.state.filters = { IsUnplayed: true };
     await h.fetch();
     await h.boundary.settle();
     assert.ok(h.boundary.nativeFocus.animationsStarted > initialAnimations, 'Normal filter refresh still permits native smooth scrolling');
+    console.log('PASS: retaining original category DOM avoids TV focus/smooth scrolling entirely and leaves existing scroll-mode attributes untouched; initial/filter focus remains native.');
+}
 
-    for (const cancellation of ['input', 'navigation', 'destroy', 'new-owner']) {
-        const target = createController(source, runtimeSource);
-        target.boundary.view.dispatch('viewshow', { isRestored: false });
-        await target.boundary.settle();
-        const id = focusCard(target, 35);
-        moveViewport(target, current);
-        target.boundary.nativeFocus.tv = true;
-        const destination = { windowX: 43, windowY: 4210, ancestorX: 54, ancestorY: 5320 };
-        let cancelled = false;
-        target.boundary.nativeFocus.afterFocusTask = element => {
-            if (cancelled || element.closest('[data-id]')?.getAttribute('data-id') !== id) return;
-            cancelled = true;
-            if (cancellation === 'input') target.boundary.input('wheel');
-            else if (cancellation === 'navigation') target.boundary.navigate('https://jellyfin.example/web/#/details?id=movie-1');
-            else if (cancellation === 'destroy') target.boundary.view.dispatch('viewdestroy');
-            else target.boundary.items.setAttribute('data-scroll-mode-x', 'new-owner-mode');
-            if (cancellation !== 'new-owner') moveViewport(target, destination);
-        };
-        target.boundary.intersect();
-        await target.boundary.settle();
-        assert.ok(cancelled, 'Cancellation occurred after queued native focus tasks and before cleanup');
-        assert.equal(target.boundary.nativeFocus.animationsStarted, 0);
-        assert.equal(target.boundary.items.getAttribute('data-scroll-mode-x'), cancellation === 'new-owner' ? 'new-owner-mode' : null);
-        assert.equal(target.boundary.items.getAttribute('data-scroll-mode-y'), null, 'Temporary scroll markers are always released');
-        if (cancellation !== 'new-owner') assert.deepEqual(viewport(target), destination, `${cancellation} cancels stale viewport restoration while still cleaning up`);
-    }
-    console.log('PASS: append focus cannot start native TV smooth animation; initial/filter focus remains native, scroll-mode attributes are restored, and input/navigation/destroy cleanup is unconditional.');
+async function exerciseAppendCompatibility(source, runtimeSource) {
+    const h = createController(source, runtimeSource, {}, { olderAppendRuntime: true });
+    await h.fetch();
+    h.boundary.frames();
+    const previous = artworkSnapshot(h);
+    h.boundary.intersect();
+    await h.boundary.settle();
+    assert.deepEqual(h.requests.map(request => request.query.StartIndex), [0, 100]);
+    assert.equal(h.result.Items.length, 200);
+    assert.equal(h.boundary.items.replacements, 2, 'A previously loaded runtime without appendList still uses native full rendering');
+    assert.equal(h.rendered.at(-1).items.length, 200);
+    assert.ok(previous.every(item => !item.card.isConnected));
+    assert.strictEqual(h.lazyScopes.at(-1).scope, h.boundary.items);
+    assert.equal(h.afterRefreshCalls.length, 2, 'Fallback preserves native refresh lifecycle');
+    console.log('PASS: an older runtime without appendList retains a working native full-render fallback and lifecycle.');
+}
+
+async function exerciseAppendPrefixGuard(source, runtimeSource) {
+    const h = createController(source, runtimeSource);
+    await h.fetch();
+    h.boundary.frames();
+    const previous = artworkSnapshot(h);
+    const append = h.boundary.window.JellyfinInfiniteScroll.appendList;
+    let accepted;
+    h.boundary.window.JellyfinInfiniteScroll.appendList = function (container, result, initialize) {
+        if (result.Items.length > 100) {
+            // Same item ID, different item reference: do not silently preserve
+            // a card from an incompatible retained prefix.
+            result.Items[0] = { ...result.Items[0], Name: 'Updated first card' };
+            accepted = append(container, result, initialize);
+            return accepted;
+        }
+        return append(container, result, initialize);
+    };
+    h.boundary.intersect();
+    await h.boundary.settle();
+    assert.equal(accepted, false, 'A changed prefix is rejected at the native render boundary');
+    assert.equal(h.boundary.items.replacements, 2);
+    assert.equal(h.rendered.at(-1).items.length, 200, 'Rejected append receives the complete native result');
+    assert.ok(previous.every(item => !item.card.isConnected));
+    assert.equal(h.result.Items[0].Name, 'Updated first card');
+    assert.strictEqual(h.lazyScopes.at(-1).scope, h.boundary.items);
+    console.log('PASS: a different retained item reference falls back to complete native rendering rather than leaving stale cards.');
+}
+
+async function exerciseRendererDisposal(source, runtimeSource) {
+    const h = createController(source, runtimeSource);
+    await h.fetch();
+    h.boundary.frames();
+    assert.notStrictEqual(h.boundary.items.getItemsHtml, h.nativeGetItemsHtml, 'Live category binding observes native full renders');
+    assert.notStrictEqual(h.boundary.items.afterRefresh, h.nativeAfterRefresh);
+    h.boundary.intersect();
+    await h.boundary.settle();
+    assert.equal(h.afterRefreshCalls.length, 2);
+    assert.ok(h.afterRefreshCalls.every(call => call.receiver === h.boundary.items && call.args.length === 1));
+    h.boundary.view.dispatch('viewdestroy');
+    assert.strictEqual(h.boundary.items.getItemsHtml, h.nativeGetItemsHtml, 'Destroy restores the original native renderer');
+    assert.strictEqual(h.boundary.items.afterRefresh, h.nativeAfterRefresh, 'Destroy restores the original refresh callback');
+    assert.equal(h.boundary.window.JellyfinInfiniteScroll.appendList(h.boundary.items, h.result, () => assert.fail('Disposed binding initialized artwork')), false);
+
+    const owned = createController(source, runtimeSource);
+    await owned.fetch();
+    owned.boundary.frames();
+    const newerRenderer = () => '';
+    const newerRefresh = () => {};
+    owned.boundary.items.getItemsHtml = newerRenderer;
+    owned.boundary.items.afterRefresh = newerRefresh;
+    owned.boundary.view.dispatch('viewdestroy');
+    assert.strictEqual(owned.boundary.items.getItemsHtml, newerRenderer, 'Disposal respects a newer renderer owner');
+    assert.strictEqual(owned.boundary.items.afterRefresh, newerRefresh, 'Disposal respects a newer callback owner');
+    console.log('PASS: append preserves native afterRefresh receiver/arguments and destruction releases only callbacks owned by its binding.');
 }
 
 async function main() {
@@ -885,6 +1029,7 @@ async function main() {
     assert.equal(candidates.length, 1, 'Generate exactly one patched generic-list category fixture first');
     const [{ name, source }] = candidates;
     assert.ok(source.includes('JellyfinInfiniteScroll.legacyList'), 'Native category display request was transformed');
+    assert.ok(source.includes('JellyfinInfiniteScroll.appendList'), 'Native category renderer delegates guarded appends');
     const runtimeSource = await readFile('src/Jellyfin.Plugin.InfiniteScroll/Web/infinite-scroll.js', 'utf8');
     for (const batchSize of [100, 7]) await exerciseCategory(source, runtimeSource, batchSize);
     await exerciseFallback(source, runtimeSource, { enabled: false }, {}, 'Disabled category extension');
@@ -901,6 +1046,9 @@ async function main() {
     await exerciseAppendViewport(source, runtimeSource);
     await exerciseAppendNavigation(source, runtimeSource);
     await exerciseQueuedFocusViewport(source, runtimeSource);
+    await exerciseAppendCompatibility(source, runtimeSource);
+    await exerciseAppendPrefixGuard(source, runtimeSource);
+    await exerciseRendererDisposal(source, runtimeSource);
     console.log(`PASS: production category bridge ${name}.`);
 }
 

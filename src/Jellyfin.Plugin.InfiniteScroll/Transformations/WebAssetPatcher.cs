@@ -153,12 +153,50 @@ public static partial class WebAssetPatcher
         Match[] setups = Regex.Matches(source[..request.Index], setupPattern, RegexOptions.None, RegexTimeout).Cast<Match>().ToArray();
         if (setups.Length != 1) return false;
 
+        // The same production chunk includes the native items container. Its
+        // replacement path also reloads every poster and refocuses a card. Give
+        // an active category append a chance to retain its existing DOM, while
+        // keeping native refresh bookkeeping and callbacks in both paths.
+        if (!TryPatchListRenderer(source, out _)) return false;
+
         string fetch = request.Groups["fetch"].Value;
         string replacement = "(window.JellyfinInfiniteScroll&&window.JellyfinInfiniteScroll.legacyList?window.JellyfinInfiniteScroll.legacyList(function(infiniteScrollQuery){return " +
             fetch + "(" + instance + "," + parameters + "," + instance + ".currentItem,null,infiniteScrollQuery.StartIndex,infiniteScrollQuery.Limit)}," +
             instance + "," + request.Groups["query"].Value + "," + setups[0].Groups["host"].Value + "):" + request.Groups["request"].Value + ")";
         Group invocation = request.Groups["request"];
-        patched = source.Remove(invocation.Index, invocation.Length).Insert(invocation.Index, replacement);
+        // Patch the request first: renderer edits may change indices earlier in
+        // the asset. Re-run its guarded edit against the completed request text.
+        string fetching = source.Remove(invocation.Index, invocation.Length).Insert(invocation.Index, replacement);
+        return TryPatchListRenderer(fetching, out patched);
+    }
+
+    private static bool TryPatchListRenderer(string source, out string patched)
+    {
+        patched = source;
+        string functionPattern = @"function " + Identifier + @"\((?<result>" + Identifier + @")\)(?<body>\{)if\(this\.getItemsHtml\)\{var (?<items>" + Identifier + @")=\k<result>\.Items\|\|\k<result>,";
+        Match[] functions = Regex.Matches(source, functionPattern, RegexOptions.None, RegexTimeout).Cast<Match>().ToArray();
+        if (functions.Length != 1) return false;
+        Match renderer = functions[0];
+        int end = FindClosing(source, renderer.Groups["body"].Index);
+        if (end < 0) return false;
+        string body = source[renderer.Index..(end + 1)];
+
+        string replacementPattern = @"this\.innerHTML=this\.getItemsHtml\(" + Regex.Escape(renderer.Groups["items"].Value) + @"\),(?<loader>" + Identifier + @"(?:\." + Identifier + @")+)\.lazyChildren\(this\)," + Identifier + @"&&function\(" + Identifier + @"," + Identifier + @"\)(?<focusBody>\{)";
+        Match[] replacements = Regex.Matches(body, replacementPattern, RegexOptions.None, RegexTimeout).Cast<Match>().ToArray();
+        if (replacements.Length != 1) return false;
+        Match replacement = replacements[0];
+        int focusEnd = FindClosing(body, replacement.Groups["focusBody"].Index);
+        if (focusEnd < 0) return false;
+        Match focusCall = Regex.Match(body[(focusEnd + 1)..], @"^\(this," + Identifier + @"\)(?=," + Identifier + @"\(this\),this\.afterRefresh&&this\.afterRefresh\(" + Regex.Escape(renderer.Groups["result"].Value) + @"\))", RegexOptions.None, RegexTimeout);
+        if (!focusCall.Success) return false;
+
+        int length = focusEnd + 1 + focusCall.Length - replacement.Index;
+        string native = body.Substring(replacement.Index, length);
+        string append = "(window.JellyfinInfiniteScroll&&window.JellyfinInfiniteScroll.appendList&&window.JellyfinInfiniteScroll.appendList(this," +
+            renderer.Groups["result"].Value + ",function(infiniteScrollScope){" + replacement.Groups["loader"].Value +
+            ".lazyChildren(infiniteScrollScope)})||(" + native + "))";
+        int start = renderer.Index + replacement.Index;
+        patched = source.Remove(start, length).Insert(start, append);
         return true;
     }
 

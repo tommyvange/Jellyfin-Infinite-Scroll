@@ -10,17 +10,17 @@ The generated catalog is separate from the source branch and is updated after ea
 
 ## Normal release procedure
 
-1. Set the next four-part plugin version in `Directory.Build.props`, such as `1.2.2.0`. It must be greater than the last public release version.
+1. Set the next four-part plugin version in `Directory.Build.props`, such as `1.2.3.0`. It must be greater than the last public release version.
 2. Update `release/notes.md` with the changes included in that release. Keep the plugin GUID and name unchanged in `release/config.json` and `Plugin.cs`.
 3. Commit the changes to `main`, push, and let **Build and test** pass.
 4. Create and push the exact matching tag:
 
    ```sh
-   git tag -a v1.2.2.0 -m "Release 1.2.2.0"
-   git push origin v1.2.2.0
+   git tag -a v1.2.3.0 -m "Release 1.2.3.0"
+   git push origin v1.2.3.0
    ```
 
-   The current source version is `1.2.2.0`; `v1.2.1.0` is already published and must remain unchanged.
+   The current source version is `1.2.3.0`; `v1.2.1.0` is already published and must remain unchanged.
 
 The tag must point to a commit on `main`. Version mismatches and prerelease tags are rejected. The **Publish release** workflow runs the reusable build workflow again from the tagged source, so publication does not depend on another workflow's temporary artifacts.
 

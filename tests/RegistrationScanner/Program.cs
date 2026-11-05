@@ -38,7 +38,11 @@ try
     File.WriteAllText(categoryPath,
         "function nativeFetch(){state.queryRecursive=true;return {GenreIds:genre.Id,IncludeItemTypes:'Movie'}}" +
         "function List(page,parameters){var controller=this;controller.params=parameters,this.itemsContainer=page.querySelector(\".itemsContainer\");" +
-        "controller.itemsContainer.fetchData=function(){return loading=!0,nativeFetch(controller,parameters,controller.currentItem,null,paging.StartIndex,paging.Limit).then(function(result){return result})};view.getQueryPagingHtml({})}");
+        "controller.itemsContainer.fetchData=function(){return loading=!0,nativeFetch(controller,parameters,controller.currentItem,null,paging.StartIndex,paging.Limit).then(function(result){return result})};view.getQueryPagingHtml({})}" +
+        "function render(result){if(this.getItemsHtml){var items=result.Items||result,parent=this.parentContainer;" +
+        "parent&&(items.length?parent.classList.remove('hide'):parent.classList.add('hide'));var id,focused,active=document.activeElement;" +
+        "this.contains(active)&&(focused=!0,id=active.getAttribute('data-id')),this.innerHTML=this.getItemsHtml(items),images.native.lazyChildren(this)," +
+        "focused&&function(container,itemId){focus.autoFocus(container)}(this,id),resetInterval(this),this.afterRefresh&&this.afterRefresh(result)}}");
     Assert(WebAssetScanner.Discover(webRoot, pluginId).Any(asset => asset.RelativePath == "list.abcd.chunk.js"), "The shared category controller must receive its own exact-file transformation.");
     File.Delete(categoryPath);
 

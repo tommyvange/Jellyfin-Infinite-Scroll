@@ -33,19 +33,34 @@ Console.WriteLine("PASS: index injection, scanner, structural guards, renamed bi
 
 string listFetch = "nativeFetch(controller,parameters,controller.currentItem,null,paging.StartIndex,paging.Limit)";
 string listSetup = "controller=this;controller.params=parameters,this.itemsContainer=page.querySelector(\".itemsContainer\")";
+string listRender = "function fetched(result){if(this.getItemsHtml){var items=result.Items||result,parent=this.parentContainer;" +
+    "parent&&(items.length?parent.classList.remove(\"hide\"):parent.classList.add(\"hide\"));var focusId,hasFocus,active=document.activeElement;" +
+    "this.contains(active)&&(hasFocus=!0,focusId=active.getAttribute(\"data-id\"))," +
+    "this.innerHTML=this.getItemsHtml(items),images.native.lazyChildren(this),hasFocus&&function(container,id){" +
+    "if(id){var card=container.querySelector('[data-id=\"'+id+'\"]');if(card)try{return void focus.focus(card)}catch(error){console.error(error)}}" +
+    "focus.autoFocus(container)}(this,focusId),resetInterval(this),this.afterRefresh&&this.afterRefresh(result)}}";
 string list = "function nativeFetch(){state.queryRecursive=true;return {GenreIds:genre.Id}}function List(page,parameters){var " +
     listSetup + ";controller.itemsContainer.fetchData=function(){return loading=!0," + listFetch + ".then(function(result){return result})};" +
-    "function play(){return nativeFetch(controller,parameters,controller.currentItem,null,0,300)};view.getQueryPagingHtml({})}";
+    "function play(){return nativeFetch(controller,parameters,controller.currentItem,null,0,300)};view.getQueryPagingHtml({})}" + listRender;
 string listPatched = WebAssetPatcher.PatchJavaScript(list);
 Assert(listPatched != list, "The shared category list must be recognized with renamed bindings.");
 Assert(listPatched.Contains("legacyList(function(infiniteScrollQuery){return nativeFetch(controller,parameters,controller.currentItem,null,infiniteScrollQuery.StartIndex,infiniteScrollQuery.Limit)},controller,paging,page)", StringComparison.Ordinal), "Only display pagination must be adapted through the native list request.");
 Assert(listPatched.Contains("function play(){return nativeFetch(controller,parameters,controller.currentItem,null,0,300)}", StringComparison.Ordinal), "Playback requests must remain unchanged.");
+Assert(listPatched.Contains("JellyfinInfiniteScroll.appendList(this,result,function(infiniteScrollScope){images.native.lazyChildren(infiniteScrollScope)})||(this.innerHTML=this.getItemsHtml(items),images.native.lazyChildren(this),hasFocus&&function", StringComparison.Ordinal), "Append must receive the native lazy loader and retain the original renderer as fallback.");
+Assert(listPatched.Contains("}(this,focusId))),resetInterval(this),this.afterRefresh&&this.afterRefresh(result)", StringComparison.Ordinal), "Append must skip native replacement and refocus, while preserving refresh bookkeeping and callbacks.");
+Assert(listPatched.Contains("parent&&(items.length?parent.classList.remove(\"hide\"):parent.classList.add(\"hide\"))", StringComparison.Ordinal), "Native parent-container visibility must remain intact.");
 Assert(WebAssetPatcher.PatchJavaScript(listPatched) == listPatched, "List patches must be idempotent.");
 string changedList = list.Replace(".currentItem,null,", ".changedItem,null,", StringComparison.Ordinal);
 Assert(WebAssetPatcher.PatchJavaScript(changedList) == changedList, "An unsupported list request must remain intact.");
 string ambiguousList = list + list;
 Assert(WebAssetPatcher.PatchJavaScript(ambiguousList) == ambiguousList, "Ambiguous list requests must remain intact.");
-Console.WriteLine("PASS: category list scope, native request preservation, renamed bindings, structural guards, and idempotency.");
+string changedRenderer = list.Replace("this.getItemsHtml(items)", "this.changedItemsHtml(items)", StringComparison.Ordinal);
+Assert(WebAssetPatcher.PatchJavaScript(changedRenderer) == changedRenderer, "A changed native renderer must prevent a partial list patch.");
+string ambiguousRenderer = list + listRender;
+Assert(WebAssetPatcher.PatchJavaScript(ambiguousRenderer) == ambiguousRenderer, "Ambiguous native renderers must prevent a partial list patch.");
+string missingRenderer = list[..^listRender.Length];
+Assert(WebAssetPatcher.PatchJavaScript(missingRenderer) == missingRenderer, "A missing native renderer must prevent a partial list patch.");
+Console.WriteLine("PASS: category list scope, append integration, native renderer fallback, renamed bindings, structural guards, and idempotency.");
 
 // Optional real fixtures can be supplied locally, without redistributing the
 // complete upstream bundles. Patched output is used for Node syntax validation.
